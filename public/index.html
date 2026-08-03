@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#111317">
+    <meta name="description" content="从手机查看和控制电脑上的 tmux / Codex 会话">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="stylesheet" href="/styles.css">
+    <title>tmux relay</title>
+  </head>
+  <body>
+    <div id="app">
+      <section id="auth-gate" class="auth-gate" aria-labelledby="auth-title">
+        <div class="auth-card">
+          <div class="eyebrow">REMOTE CONSOLE / LOCAL FIRST</div>
+          <div class="brand-lockup">
+            <span class="brand-mark" aria-hidden="true">↗</span>
+            <div>
+              <h1 id="auth-title">tmux relay</h1>
+              <p>把电脑上的 Codex 会话带到手机上。</p>
+            </div>
+          </div>
+          <p class="auth-copy">输入服务启动时显示的访问令牌。令牌只用于这个控制台，不会保存终端输出。</p>
+          <form id="token-form" class="token-form">
+            <label for="token-input">访问令牌</label>
+            <div class="token-row">
+              <input id="token-input" name="token" type="password" autocomplete="current-password" spellcheck="false" placeholder="粘贴令牌" required>
+              <button class="primary-button" type="submit">连接</button>
+            </div>
+          </form>
+          <p id="auth-error" class="form-error" role="alert"></p>
+          <div class="security-note"><span class="note-dot"></span><span>服务只提供 tmux 目标和常用控制键，不提供任意 shell API。</span></div>
+        </div>
+      </section>
+
+      <section id="app-shell" class="app-shell is-hidden" aria-label="tmux relay 控制台">
+        <header class="topbar">
+          <div class="brand-lockup compact">
+            <span class="brand-mark" aria-hidden="true">↗</span>
+            <div>
+              <div class="product-name">tmux relay</div>
+              <div class="product-subtitle">phone control surface</div>
+            </div>
+          </div>
+          <div class="topbar-actions">
+            <div id="connection-status" class="connection-status" role="status"><span class="status-dot"></span><span>连接中</span></div>
+            <button id="refresh-button" class="icon-button" type="button" aria-label="刷新会话" title="刷新会话">↻</button>
+            <button id="logout-button" class="ghost-button" type="button">退出</button>
+          </div>
+        </header>
+
+        <div id="mobile-switcher" class="mobile-switcher" aria-label="快速切换会话与 Pane">
+          <span class="mobile-switcher-label">切换</span>
+          <label class="sr-only" for="quick-session-select">快速切换 tmux 会话</label>
+          <select id="quick-session-select" aria-label="快速切换 tmux 会话"></select>
+          <label class="sr-only" for="quick-pane-select">快速切换当前会话的 Pane</label>
+          <select id="quick-pane-select" aria-label="快速切换当前会话的 Pane"></select>
+        </div>
+
+        <div class="workspace">
+          <nav class="session-rail" aria-label="tmux 会话">
+            <div class="rail-heading">
+              <div>
+                <div class="section-kicker">TMUX SESSIONS</div>
+                <h2>会话</h2>
+              </div>
+              <span id="session-count" class="count-badge">0</span>
+            </div>
+            <div id="session-list" class="session-list" role="list"></div>
+            <div class="rail-footer">选择会话后，下面会列出它的每个 window / pane。</div>
+          </nav>
+
+          <main class="main-panel">
+            <div class="content-heading">
+              <div>
+                <div class="section-kicker">CURRENT SESSION</div>
+                <h2 id="current-session-name">等待选择</h2>
+              </div>
+              <div id="session-meta" class="session-meta">—</div>
+            </div>
+
+            <section class="pane-section" aria-labelledby="pane-heading">
+              <div class="section-heading-row">
+                <div>
+                  <div class="section-kicker">WINDOWS / PANES</div>
+                  <h3 id="pane-heading">工作区</h3>
+                </div>
+                <span id="pane-count" class="muted-label">0 个 pane</span>
+              </div>
+              <div id="pane-list" class="pane-list" role="list"></div>
+            </section>
+
+            <section class="terminal-card" aria-labelledby="terminal-heading">
+              <div class="terminal-heading">
+                <div class="terminal-title-wrap">
+                  <span class="terminal-glyph" aria-hidden="true">▣</span>
+                  <div>
+                    <h3 id="terminal-heading">终端输出</h3>
+                    <div id="current-pane-meta" class="terminal-meta">未选择 pane</div>
+                  </div>
+                </div>
+                <span id="last-updated" class="last-updated">—</span>
+              </div>
+              <div id="terminal-wrap" class="terminal-wrap">
+                <pre id="terminal-output" class="terminal-output" tabindex="0" aria-live="polite" aria-label="当前 pane 的终端输出"></pre>
+                <div id="terminal-empty" class="terminal-empty">选择一个 pane 查看最近输出</div>
+              </div>
+              <div class="composer-area">
+                <div class="shortcut-row" aria-label="常用控制键">
+                  <button class="shortcut-button danger" type="button" data-key="C-c">Ctrl-C</button>
+                  <button class="shortcut-button" type="button" data-key="Escape">Esc</button>
+                  <button class="shortcut-button" type="button" data-key="C-l">清屏</button>
+                  <button class="shortcut-button" type="button" data-key="Up">↑</button>
+                  <button class="shortcut-button" type="button" data-key="Down">↓</button>
+                  <button class="shortcut-button" type="button" data-key="Enter">Enter</button>
+                </div>
+                <form id="composer-form" class="composer-form">
+                  <label class="sr-only" for="message-input">发送到当前 Codex pane</label>
+                  <textarea id="message-input" rows="1" placeholder="给当前 pane 发送消息…（Enter 发送，Shift+Enter 换行）" autocomplete="off" spellcheck="false"></textarea>
+                  <button id="send-button" class="send-button" type="submit" aria-label="发送消息">↑</button>
+                </form>
+                <div class="composer-hint"><span>目标</span><code id="target-label">—</code><span class="hint-separator">·</span><span>输出只保留在电脑的 tmux buffer 中</span></div>
+              </div>
+            </section>
+          </main>
+        </div>
+      </section>
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </div>
+    <noscript>需要启用 JavaScript 才能使用 tmux relay。</noscript>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+node_modules/
+.DS_Store
+npm-debug.log*
+
+# Local assets and generated/runtime state
+pic/
+graphify-out/
+.omx/

@@ -1,0 +1,9 @@
+{
+  "name": "tmux relay",
+  "short_name": "tmux relay",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111317",
+  "theme_color": "#111317",
+  "description": "Phone-friendly tmux and Codex console"
+}
