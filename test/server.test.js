@@ -113,6 +113,139 @@ test('protects APIs with a token and supports session/output/input flows', async
   assert.equal(invalidKey.status, 400);
 });
 
+test('uploads a supported image and sends it with the prompt', async (t) => {
+  const { calls, loadedBuffers, runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const headers = { Authorization: 'Bearer test-token', 'Content-Type': 'image/png' };
+  const image = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'base64',
+  );
+  const upload = await fetch(`${base}/api/uploads`, {
+    method: 'POST',
+    headers,
+    body: image,
+  });
+  assert.equal(upload.status, 201);
+  const uploadPayload = await upload.json();
+  assert.match(uploadPayload.attachmentId, /^[a-f0-9]{32}$/);
+  assert.equal(uploadPayload.contentType, 'image/png');
+
+  const input = await fetch(`${base}/api/panes/%251/input`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text: '请分析这张截图',
+      attachmentId: uploadPayload.attachmentId,
+      submit: true,
+    }),
+  });
+  assert.equal(input.status, 200);
+  assert.match(loadedBuffers.at(-1), /^Image path: .*pocketmux-uploads.*\.png\n请分析这张截图$/);
+  const mutationCalls = calls.filter((args) => ['load-buffer', 'paste-buffer', 'send-keys'].includes(args[0]));
+  assert.deepEqual(mutationCalls.map((args) => args[0]), ['load-buffer', 'paste-buffer', 'send-keys']);
+  assert.equal(mutationCalls.at(-1).at(-1), 'Enter');
+});
+
+test('uploads common documents through the same attachment endpoint', async (t) => {
+  const { runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const cases = [
+    {
+      name: 'notes.txt',
+      contentType: 'text/plain',
+      body: Buffer.from('notes for codex'),
+      extension: 'txt',
+    },
+    {
+      name: 'report.pdf',
+      contentType: 'application/pdf',
+      body: Buffer.from('%PDF-1.7\n'),
+      extension: 'pdf',
+    },
+    {
+      name: 'report.docx',
+      contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      body: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      extension: 'docx',
+    },
+    {
+      name: 'data.xlsx',
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      body: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      extension: 'xlsx',
+    },
+  ];
+
+  for (const file of cases) {
+    const upload = await fetch(`${base}/api/uploads`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-token',
+        'Content-Type': file.contentType,
+        'X-File-Name': encodeURIComponent(file.name),
+      },
+      body: file.body,
+    });
+    assert.equal(upload.status, 201, file.name);
+    const payload = await upload.json();
+    assert.equal(payload.kind, 'file');
+    assert.equal(payload.name, file.name);
+    assert.equal(payload.extension, file.extension);
+  }
+});
+
+test('sends a document path followed by its prompt to the current pane', async (t) => {
+  const { loadedBuffers, runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const upload = await fetch(`${base}/api/uploads`, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer test-token',
+      'Content-Type': 'text/plain',
+      'X-File-Name': encodeURIComponent('notes.txt'),
+    },
+    body: Buffer.from('notes for codex'),
+  });
+  const { attachmentId } = await upload.json();
+
+  const input = await fetch(`${base}/api/panes/%251/input`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text: '请总结这个文件',
+      attachmentId,
+      submit: true,
+    }),
+  });
+  assert.equal(input.status, 200);
+  assert.match(loadedBuffers.at(-1), /^File path: .*pocketmux-uploads.*\.txt\n请总结这个文件$/);
+});
+
+test('rejects invalid image uploads before touching tmux', async (t) => {
+  const { calls, runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const response = await fetch(`${base}/api/uploads`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'image/png' },
+    body: Buffer.from('not an image'),
+  });
+  assert.equal(response.status, 415);
+  assert.equal(calls.length, 0);
+});
+
 test('exits tmux copy mode before submitting input', async (t) => {
   const { calls, runner } = fakeTmux({ pane: { inMode: '1', mode: 'copy-mode' } });
   const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });

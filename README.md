@@ -7,6 +7,7 @@ Pocketmux is a lightweight, self-hosted web console for securely monitoring and 
 - Browse tmux sessions, windows, and panes from a mobile-friendly interface.
 - Identify Codex panes from their command or pane title.
 - View recent pane output and send text or common control keys.
+- Attach images and common files (PDF, text, Word, and Excel) with a custom prompt for Codex analysis.
 - Refresh pane output and session metadata automatically.
 - Protect API access with a bearer token.
 - Restrict backend operations to discovered tmux panes and a fixed control-key allowlist.
@@ -33,6 +34,10 @@ The service prints an access token and a local URL. Open the URL in a browser, o
 http://<host>:3789/?token=<access-token>
 ```
 
+## Attachment analysis
+
+Use the `附件` button in the composer to select an image or common file, add an optional prompt, and send both to the selected Codex pane. Pocketmux stores the attachment locally on the host, then sends its local path followed by the prompt. Images are limited to 10 MB; other supported attachments are limited to 25 MB. Uploaded attachments are removed when the service stops or after 24 hours.
+
 To configure the bind address, port, or token explicitly:
 
 ```bash
@@ -54,6 +59,7 @@ For temporary testing only, a [Cloudflare Quick Tunnel](https://developers.cloud
 - The browser cannot submit arbitrary shell commands.
 - The backend accepts only discovered tmux pane IDs and fixed control keys.
 - Text is passed to tmux through its buffer rather than shell interpolation.
+- Attachment uploads require the same bearer token, accept only supported image, document, and text formats, and are never served as public static files.
 - Captured output is kept in memory and is not persisted by Pocketmux.
 
 The access token is a bearer credential. Do not share URLs that contain `?token=...`.

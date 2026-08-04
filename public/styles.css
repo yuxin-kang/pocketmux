@@ -36,7 +36,7 @@ body {
 
 button, input, textarea { font: inherit; }
 button { color: inherit; }
-button:focus-visible, input:focus-visible, textarea:focus-visible, pre:focus-visible {
+button:focus-visible, input:focus-visible, textarea:focus-visible, pre:focus-visible, label:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -203,7 +203,17 @@ h1 { font-size: 28px; letter-spacing: -0.04em; }
 .shortcut-row { display: flex; gap: 7px; margin-bottom: 10px; overflow-x: auto; padding-bottom: 1px; }
 .shortcut-button { min-height: 29px; padding: 4px 9px; border-radius: 6px; color: var(--muted); font-family: var(--mono); font-size: 10px; white-space: nowrap; }
 .shortcut-button.danger { color: var(--danger); }
+.attachment-preview { display: flex; align-items: center; gap: 9px; max-width: min(100%, 360px); margin: 0 0 9px; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--bg); }
+.attachment-visual { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; }
+.attachment-thumbnail { width: 38px; height: 38px; flex: 0 0 auto; border-radius: 6px; object-fit: cover; background: var(--surface-soft); }
+.attachment-file-icon { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-soft); color: var(--accent-strong); font-family: var(--mono); font-size: 8px; font-weight: 700; }
+.attachment-details { display: grid; min-width: 0; gap: 3px; color: var(--faint); font-size: 10px; }
+.attachment-details strong { overflow: hidden; color: var(--text); font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.remove-attachment { width: 27px; height: 27px; flex: 0 0 auto; margin-left: auto; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; }
+.remove-attachment:hover { border-color: var(--line-strong); color: var(--text); background: var(--surface-soft); }
 .composer-form { display: flex; align-items: end; gap: 9px; }
+.attach-button { display: grid; width: 42px; height: 42px; flex: 0 0 auto; place-items: center; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--bg); color: var(--muted); cursor: pointer; font-family: var(--mono); font-size: 10px; }
+.attach-button:hover { border-color: var(--accent); color: var(--text); }
 .composer-form textarea { min-height: 42px; max-height: 140px; flex: 1; resize: none; padding: 11px 12px; border: 1px solid var(--line-strong); border-radius: 9px; outline: none; background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 12px; line-height: 1.45; }
 .composer-form textarea:focus { border-color: var(--accent); }
 .send-button { width: 42px; height: 42px; flex: 0 0 auto; font-size: 20px; }
@@ -273,6 +283,8 @@ h1 { font-size: 28px; letter-spacing: -0.04em; }
   .terminal-heading { min-height: 54px; padding: 10px 13px; }
   .composer-area { padding: 9px 10px 10px; }
   .shortcut-row { margin-bottom: 8px; }
+  .composer-form { gap: 7px; }
+  .attach-button, .send-button { width: 40px; height: 40px; }
   .composer-hint { overflow: hidden; white-space: nowrap; }
   .composer-hint span:last-child { overflow: hidden; text-overflow: ellipsis; }
   .toast { right: 15px; bottom: max(15px, env(safe-area-inset-bottom)); }

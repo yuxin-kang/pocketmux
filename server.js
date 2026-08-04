@@ -10,14 +10,80 @@ const { spawn } = require('node:child_process');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
+const UPLOAD_DIR = path.join(os.tmpdir(), 'pocketmux-uploads');
 // tmux escapes other control characters such as 0x1f as the literal text
 // "\\037". A tab is emitted verbatim by tmux 3.x and is not valid in the
 // session/window/pane metadata we expose.
 const DELIMITER = '\t';
 const MAX_BODY_BYTES = 32 * 1024;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const ATTACHMENT_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_INPUT_CHARS = 8000;
+const MAX_COMPOSED_INPUT_CHARS = 12000;
 const DEFAULT_OUTPUT_LINES = 240;
 const MAX_OUTPUT_LINES = 600;
 const DEFAULT_PORT = 3789;
+
+const IMAGE_TYPES = new Map([
+  ['image/png', { extension: 'png', signature: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) }],
+  ['image/jpeg', { extension: 'jpg', signature: Buffer.from([0xff, 0xd8, 0xff]) }],
+  ['image/gif', { extension: 'gif', signature: Buffer.from('GIF') }],
+  ['image/webp', { extension: 'webp', signature: Buffer.from('RIFF') }],
+]);
+const ZIP_SIGNATURE = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+const OLE_SIGNATURE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+const FILE_TYPE_DEFINITIONS = new Map([
+  ['application/pdf', { extension: 'pdf', contentType: 'application/pdf', signature: Buffer.from('%PDF-') }],
+  ['text/plain', { extension: 'txt', contentType: 'text/plain' }],
+  ['text/markdown', { extension: 'md', contentType: 'text/markdown' }],
+  ['text/csv', { extension: 'csv', contentType: 'text/csv' }],
+  ['application/json', { extension: 'json', contentType: 'application/json' }],
+  ['application/xml', { extension: 'xml', contentType: 'application/xml' }],
+  ['text/xml', { extension: 'xml', contentType: 'text/xml' }],
+  ['text/yaml', { extension: 'yaml', contentType: 'text/yaml' }],
+  ['application/x-yaml', { extension: 'yaml', contentType: 'application/x-yaml' }],
+  ['text/rtf', { extension: 'rtf', contentType: 'text/rtf', signature: Buffer.from('{\\rtf') }],
+  ['application/rtf', { extension: 'rtf', contentType: 'application/rtf', signature: Buffer.from('{\\rtf') }],
+  ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', {
+    extension: 'docx',
+    contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    signature: ZIP_SIGNATURE,
+  }],
+  ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', {
+    extension: 'xlsx',
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    signature: ZIP_SIGNATURE,
+  }],
+  ['application/vnd.openxmlformats-officedocument.presentationml.presentation', {
+    extension: 'pptx',
+    contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    signature: ZIP_SIGNATURE,
+  }],
+  ['application/msword', { extension: 'doc', contentType: 'application/msword', signature: OLE_SIGNATURE }],
+  ['application/vnd.ms-excel', { extension: 'xls', contentType: 'application/vnd.ms-excel', signature: OLE_SIGNATURE }],
+  ['application/vnd.ms-powerpoint', { extension: 'ppt', contentType: 'application/vnd.ms-powerpoint', signature: OLE_SIGNATURE }],
+]);
+const FILE_EXTENSION_DEFINITIONS = new Map([
+  ['pdf', FILE_TYPE_DEFINITIONS.get('application/pdf')],
+  ['txt', FILE_TYPE_DEFINITIONS.get('text/plain')],
+  ['md', FILE_TYPE_DEFINITIONS.get('text/markdown')],
+  ['markdown', { extension: 'md', contentType: 'text/markdown' }],
+  ['csv', FILE_TYPE_DEFINITIONS.get('text/csv')],
+  ['json', FILE_TYPE_DEFINITIONS.get('application/json')],
+  ['xml', FILE_TYPE_DEFINITIONS.get('application/xml')],
+  ['yaml', FILE_TYPE_DEFINITIONS.get('text/yaml')],
+  ['yml', { extension: 'yml', contentType: 'text/yaml' }],
+  ['rtf', FILE_TYPE_DEFINITIONS.get('application/rtf')],
+  ['log', { extension: 'log', contentType: 'text/plain' }],
+  ['docx', FILE_TYPE_DEFINITIONS.get('application/vnd.openxmlformats-officedocument.wordprocessingml.document')],
+  ['xlsx', FILE_TYPE_DEFINITIONS.get('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')],
+  ['pptx', FILE_TYPE_DEFINITIONS.get('application/vnd.openxmlformats-officedocument.presentationml.presentation')],
+  ['doc', FILE_TYPE_DEFINITIONS.get('application/msword')],
+  ['xls', FILE_TYPE_DEFINITIONS.get('application/vnd.ms-excel')],
+  ['ppt', FILE_TYPE_DEFINITIONS.get('application/vnd.ms-powerpoint')],
+]);
+const ATTACHMENT_ID_PATTERN = /^[a-f0-9]{32}$/;
 
 const SESSION_FORMAT = [
   '#{session_name}',
@@ -315,29 +381,168 @@ async function cancelPaneMode(tmuxRunner, pane) {
   await tmuxRunner(['send-keys', '-X', '-t', pane.id, 'cancel']);
 }
 
-function readJsonBody(req) {
+function readRequestBody(req, maxBytes, tooLargeMessage) {
   return new Promise((resolve, reject) => {
+    const declaredLength = Number.parseInt(req.headers['content-length'] || '', 10);
+    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+      req.resume();
+      reject(new ApiError(413, 'Request body too large', tooLargeMessage));
+      return;
+    }
+
     const chunks = [];
     let size = 0;
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      req.resume();
+      reject(error);
+    };
+
     req.on('data', (chunk) => {
+      if (settled) return;
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        reject(new ApiError(413, 'Request body too large', '输入内容太长了。'));
-        req.destroy();
+      if (size > maxBytes) {
+        fail(new ApiError(413, 'Request body too large', tooLargeMessage));
         return;
       }
       chunks.push(chunk);
     });
     req.on('end', () => {
-      try {
-        const body = Buffer.concat(chunks).toString('utf8');
-        resolve(body ? JSON.parse(body) : {});
-      } catch {
-        reject(new ApiError(400, 'Invalid JSON body', '请求内容格式不正确。'));
-      }
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks));
     });
-    req.on('error', reject);
+    req.on('error', (error) => fail(error));
   });
+}
+
+async function readJsonBody(req) {
+  const body = await readRequestBody(req, MAX_BODY_BYTES, '输入内容太长了。');
+  try {
+    return body.length > 0 ? JSON.parse(body.toString('utf8')) : {};
+  } catch {
+    throw new ApiError(400, 'Invalid JSON body', '请求内容格式不正确。');
+  }
+}
+
+function normalizedContentType(value) {
+  return String(value || '').split(';', 1)[0].trim().toLowerCase();
+}
+
+function bufferStartsWith(buffer, signature, offset = 0) {
+  return buffer.length >= offset + signature.length
+    && buffer.subarray(offset, offset + signature.length).equals(signature);
+}
+
+function fileExtension(fileName) {
+  return path.extname(String(fileName || '')).slice(1).toLowerCase();
+}
+
+function detectImageType(contentType, buffer, fileName = '') {
+  let normalizedType = normalizedContentType(contentType);
+  if (!normalizedType || normalizedType === 'application/octet-stream') {
+    const extensionType = {
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      webp: 'image/webp',
+    }[fileExtension(fileName)];
+    normalizedType = extensionType || normalizedType;
+  }
+  if (normalizedType === 'image/jpg') normalizedType = 'image/jpeg';
+  const definition = IMAGE_TYPES.get(normalizedType);
+  if (!definition) return null;
+  if (normalizedType === 'image/webp') {
+    return bufferStartsWith(buffer, definition.signature)
+      && bufferStartsWith(buffer, Buffer.from('WEBP'), 8)
+      ? { ...definition, contentType: normalizedType }
+      : null;
+  }
+  return bufferStartsWith(buffer, definition.signature)
+    ? { ...definition, contentType: normalizedType }
+    : null;
+}
+
+function detectAttachmentType(contentType, fileName, buffer) {
+  const normalizedType = normalizedContentType(contentType);
+  const extension = fileExtension(fileName);
+  const imageType = detectImageType(contentType, buffer, fileName);
+  if (imageType) return { ...imageType, kind: 'image' };
+  if (normalizedType.startsWith('image/')) return null;
+
+  const typeDefinition = normalizedType && normalizedType !== 'application/octet-stream'
+    ? FILE_TYPE_DEFINITIONS.get(normalizedType)
+    : null;
+  const extensionDefinition = FILE_EXTENSION_DEFINITIONS.get(extension);
+  const definition = typeDefinition || extensionDefinition;
+  if (!definition) return null;
+  if (definition.signature && !bufferStartsWith(buffer, definition.signature)) return null;
+  return { ...definition, kind: 'file' };
+}
+
+function requestFileName(req) {
+  const rawName = req.headers['x-file-name'];
+  if (typeof rawName !== 'string') return 'attachment';
+  let decodedName = rawName;
+  try {
+    decodedName = decodeURIComponent(rawName);
+  } catch {
+    // Keep the raw header when a client sends a malformed encoded name.
+  }
+  const safeName = path.basename(decodedName.replaceAll('\\', '/'))
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim()
+    .slice(0, 180);
+  return safeName || 'attachment';
+}
+
+async function ensureUploadDirectory() {
+  await fsp.mkdir(UPLOAD_DIR, { recursive: true, mode: 0o700 });
+  await fsp.chmod(UPLOAD_DIR, 0o700);
+}
+
+async function saveAttachment(req) {
+  const content = await readRequestBody(req, MAX_ATTACHMENT_BYTES, '附件不能超过 25 MB。');
+  if (content.length === 0) {
+    throw new ApiError(400, 'Attachment body is empty', '请选择一个附件后再发送。');
+  }
+  const name = requestFileName(req);
+  const attachmentType = detectAttachmentType(req.headers['content-type'], name, content);
+  if (!attachmentType) {
+    throw new ApiError(415, 'Unsupported attachment type', '仅支持 PNG、JPEG、GIF、WebP、PDF、TXT/MD/CSV/JSON、DOC/DOCX/XLS/XLSX 等文件。');
+  }
+  if (attachmentType.kind === 'image' && content.length > MAX_IMAGE_BYTES) {
+    throw new ApiError(413, 'Image body too large', '图片不能超过 10 MB。');
+  }
+
+  await ensureUploadDirectory();
+  const id = randomBytes(16).toString('hex');
+  const filePath = path.join(UPLOAD_DIR, `${id}.${attachmentType.extension}`);
+  await fsp.writeFile(filePath, content, { encoding: null, mode: 0o600, flag: 'wx' });
+  return {
+    id,
+    path: filePath,
+    kind: attachmentType.kind,
+    name,
+    contentType: attachmentType.contentType,
+    extension: attachmentType.extension,
+    size: content.length,
+    createdAt: Date.now(),
+  };
+}
+
+function buildImagePrompt(userText, attachmentPath) {
+  const prompt = typeof userText === 'string' ? userText : '';
+  return `Image path: ${attachmentPath}\n${prompt}`;
+}
+
+function buildAttachmentPrompt(userText, attachment) {
+  if (attachment.kind === 'image') return buildImagePrompt(userText, attachment.path);
+  const prompt = typeof userText === 'string' ? userText : '';
+  return `File path: ${attachment.path}\n${prompt}`;
 }
 
 function sendJson(res, statusCode, payload) {
@@ -421,6 +626,20 @@ function createRemoteToolServer({
   }
 
   const paneMutationQueues = new Map();
+  const attachments = new Map();
+  const pruneAttachments = async () => {
+    const expiry = Date.now() - ATTACHMENT_TTL_MS;
+    const expired = [...attachments.values()].filter((attachment) => attachment.createdAt < expiry);
+    for (const attachment of expired) {
+      attachments.delete(attachment.id);
+      await fsp.rm(attachment.path, { force: true });
+    }
+  };
+  const attachmentCleanupTimer = setInterval(() => {
+    void pruneAttachments().catch((error) => console.error('[pocketmux] attachment cleanup failed', error));
+  }, 60 * 60 * 1000);
+  attachmentCleanupTimer.unref?.();
+
   const queuePaneMutation = (paneId, operation) => {
     const previous = paneMutationQueues.get(paneId) || Promise.resolve();
     const queued = previous.catch(() => undefined).then(operation);
@@ -437,7 +656,7 @@ function createRemoteToolServer({
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
-        'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+        'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-File-Name',
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       });
       res.end();
@@ -467,6 +686,22 @@ function createRemoteToolServer({
         return;
       }
 
+      if (req.method === 'POST' && parts.length === 2 && parts[1] === 'uploads') {
+        await pruneAttachments();
+        const attachment = await saveAttachment(req);
+        attachments.set(attachment.id, attachment);
+        sendJson(res, 201, {
+          ok: true,
+          attachmentId: attachment.id,
+          kind: attachment.kind,
+          name: attachment.name,
+          contentType: attachment.contentType,
+          extension: attachment.extension,
+          size: attachment.size,
+        });
+        return;
+      }
+
       if (parts.length >= 4 && parts[1] === 'panes') {
         const paneId = parts[2];
         const action = parts[3];
@@ -484,16 +719,31 @@ function createRemoteToolServer({
           const body = await readJsonBody(req);
           const text = typeof body.text === 'string' ? body.text : '';
           const submit = body.submit === true;
-          if (text.length > 8000) {
+          if (text.length > MAX_INPUT_CHARS) {
             throw new ApiError(413, 'Input is too long', '单次输入不能超过 8000 个字符。');
           }
-          if (!text && !submit) {
+          let attachment = null;
+          if (body.attachmentId !== undefined && body.attachmentId !== null && body.attachmentId !== '') {
+            if (typeof body.attachmentId !== 'string' || !ATTACHMENT_ID_PATTERN.test(body.attachmentId)) {
+              throw new ApiError(400, 'Invalid attachment id', '附件标识无效。');
+            }
+            await pruneAttachments();
+            attachment = attachments.get(body.attachmentId) || null;
+            if (!attachment) {
+              throw new ApiError(404, 'Attachment not found', '附件已过期，请重新选择后再发送。');
+            }
+          }
+          const message = attachment ? buildAttachmentPrompt(text, attachment) : text;
+          if (message.length > MAX_COMPOSED_INPUT_CHARS) {
+            throw new ApiError(413, 'Composed input is too long', '附件提示词不能超过 8000 个字符。');
+          }
+          if (!message && !submit) {
             throw new ApiError(400, 'Input is empty', '请输入内容，或选择一个控制键。');
           }
           await queuePaneMutation(paneId, async () => {
             const pane = await findPane(tmuxRunner, paneId);
             await cancelPaneMode(tmuxRunner, pane);
-            if (text) await pasteText(tmuxRunner, paneId, text);
+            if (message) await pasteText(tmuxRunner, paneId, message);
             if (submit) await sendKey(tmuxRunner, paneId, 'Enter');
           });
           sendJson(res, 200, { ok: true });
@@ -523,6 +773,12 @@ function createRemoteToolServer({
         message: 'tmux 操作失败，请确认服务所在电脑上的 tmux 仍在运行。',
       });
     }
+  });
+  server.on('close', () => {
+    clearInterval(attachmentCleanupTimer);
+    const cleanup = [...attachments.values()].map((attachment) => fsp.rm(attachment.path, { force: true }));
+    attachments.clear();
+    void Promise.all(cleanup).catch((error) => console.error('[pocketmux] attachment shutdown cleanup failed', error));
   });
 
   return { server, token };
@@ -568,10 +824,16 @@ if (require.main === module) start();
 
 module.exports = {
   ALLOWED_KEYS,
+  MAX_ATTACHMENT_BYTES,
+  MAX_IMAGE_BYTES,
   PANE_FORMAT,
   SESSION_FORMAT,
+  buildAttachmentPrompt,
+  buildImagePrompt,
   buildSessionTree,
   createRemoteToolServer,
+  detectAttachmentType,
+  detectImageType,
   isAllowedKey,
   isCodexPane,
   parsePaneRows,

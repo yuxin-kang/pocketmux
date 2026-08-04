@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#111317">
     <meta name="description" content="从手机查看和控制电脑上的 tmux / Codex 会话">
     <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=20260804-attachments">
     <title>pocketmux</title>
   </head>
   <body>
@@ -115,12 +115,24 @@
                   <button class="shortcut-button" type="button" data-key="Down">↓</button>
                   <button class="shortcut-button" type="button" data-key="Enter">Enter</button>
                 </div>
+                <div id="attachment-preview" class="attachment-preview is-hidden" aria-live="polite">
+                  <div class="attachment-visual">
+                    <img id="attachment-thumbnail" class="attachment-thumbnail is-hidden" alt="待发送的图片预览">
+                    <span id="attachment-file-icon" class="attachment-file-icon is-hidden" aria-hidden="true">FILE</span>
+                  </div>
+                  <div class="attachment-details">
+                    <strong id="attachment-name">附件</strong>
+                  </div>
+                  <button id="remove-attachment" class="remove-attachment" type="button" aria-label="移除附件" title="移除附件">×</button>
+                </div>
                 <form id="composer-form" class="composer-form">
+                  <label class="attach-button" for="attachment-input" title="选择附件">附件</label>
+                  <input id="attachment-input" class="sr-only" type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.xml,.yaml,.yml,.rtf,.log,.doc,.docx,.xls,.xlsx,.ppt,.pptx">
                   <label class="sr-only" for="message-input">发送到当前 Codex pane</label>
                   <textarea id="message-input" rows="1" placeholder="给当前 pane 发送消息…（Enter 发送，Shift+Enter 换行）" autocomplete="off" spellcheck="false"></textarea>
                   <button id="send-button" class="send-button" type="submit" aria-label="发送消息">↑</button>
                 </form>
-                <div class="composer-hint"><span>目标</span><code id="target-label">—</code><span class="hint-separator">·</span><span>输出只保留在电脑的 tmux buffer 中</span></div>
+                <div class="composer-hint"><span>目标</span><code id="target-label">—</code><span class="hint-separator">·</span><span>附件会保存在运行 pocketmux 的电脑上并交给 Codex 分析</span></div>
               </div>
             </section>
           </main>
@@ -129,6 +141,6 @@
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </div>
     <noscript>需要启用 JavaScript 才能使用 pocketmux。</noscript>
-    <script src="/app.js" defer></script>
+    <script src="/app.js?v=20260804-attachments" defer></script>
   </body>
 </html>

@@ -12,9 +12,38 @@
     outputRefreshForceBottom: false,
     refreshing: false,
     sending: false,
+    selectedAttachmentFile: null,
+    selectedAttachmentUrl: '',
   };
 
   const TERMINAL_BOTTOM_THRESHOLD = 24;
+  const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+  const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+  const IMAGE_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+  const ATTACHMENT_CONTENT_TYPES = new Set([
+    ...IMAGE_CONTENT_TYPES,
+    'application/pdf',
+    'text/plain',
+    'text/markdown',
+    'text/csv',
+    'application/json',
+    'application/xml',
+    'text/xml',
+    'text/yaml',
+    'application/x-yaml',
+    'text/rtf',
+    'application/rtf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/msword',
+    'application/vnd.ms-excel',
+    'application/vnd.ms-powerpoint',
+  ]);
+  const ATTACHMENT_EXTENSIONS = new Set([
+    'png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'txt', 'md', 'markdown', 'csv', 'json',
+    'xml', 'yaml', 'yml', 'rtf', 'log', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+  ]);
 
   const elements = {
     authGate: document.querySelector('#auth-gate'),
@@ -35,6 +64,12 @@
     lastUpdated: document.querySelector('#last-updated'),
     targetLabel: document.querySelector('#target-label'),
     messageInput: document.querySelector('#message-input'),
+    attachmentInput: document.querySelector('#attachment-input'),
+    attachmentPreview: document.querySelector('#attachment-preview'),
+    attachmentThumbnail: document.querySelector('#attachment-thumbnail'),
+    attachmentFileIcon: document.querySelector('#attachment-file-icon'),
+    attachmentName: document.querySelector('#attachment-name'),
+    removeAttachment: document.querySelector('#remove-attachment'),
     composerForm: document.querySelector('#composer-form'),
     sendButton: document.querySelector('#send-button'),
     connectionStatus: document.querySelector('#connection-status'),
@@ -44,6 +79,8 @@
     quickPaneSelect: document.querySelector('#quick-pane-select'),
     toast: document.querySelector('#toast'),
   };
+
+  elements.attachmentPreview.querySelectorAll('.attachment-details span').forEach((node) => node.remove());
 
   let toastTimer;
 
@@ -106,6 +143,128 @@
       throw new Error(payload.message || `请求失败（${response.status}）`);
     }
     return payload;
+  }
+
+  async function uploadAttachment(file) {
+    const contentType = attachmentContentType(file);
+    const headers = new Headers({
+      Authorization: `Bearer ${state.token}`,
+      'Content-Type': contentType || 'application/octet-stream',
+      'X-File-Name': encodeURIComponent(file.name || 'attachment'),
+    });
+    const response = await fetch('/api/uploads', {
+      method: 'POST',
+      headers,
+      body: file,
+    });
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch {
+      payload = {};
+    }
+    if (response.status === 401) {
+      const error = new Error(payload.message || '令牌无效。');
+      error.unauthorized = true;
+      throw error;
+    }
+    if (!response.ok) {
+      throw new Error(payload.message || `附件上传失败（${response.status}）`);
+    }
+    return payload;
+  }
+
+  function fileExtension(file) {
+    return String(file.name || '').toLowerCase().split('.').pop();
+  }
+
+  function attachmentContentType(file) {
+    const declaredType = String(file.type || '').toLowerCase();
+    if (IMAGE_CONTENT_TYPES.has(declaredType)) return declaredType;
+    if (declaredType === 'image/jpg') return 'image/jpeg';
+    if (ATTACHMENT_CONTENT_TYPES.has(declaredType)) return declaredType;
+    const extension = fileExtension(file);
+    return {
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      webp: 'image/webp',
+      pdf: 'application/pdf',
+      txt: 'text/plain',
+      md: 'text/markdown',
+      markdown: 'text/markdown',
+      csv: 'text/csv',
+      json: 'application/json',
+      xml: 'application/xml',
+      yaml: 'text/yaml',
+      yml: 'text/yaml',
+      rtf: 'application/rtf',
+      log: 'text/plain',
+      doc: 'application/msword',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xls: 'application/vnd.ms-excel',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      ppt: 'application/vnd.ms-powerpoint',
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    }[extension] || '';
+  }
+
+  function isImageAttachment(file) {
+    const declaredType = String(file.type || '').toLowerCase();
+    if (IMAGE_CONTENT_TYPES.has(declaredType) || declaredType === 'image/jpg') return true;
+    if (declaredType && declaredType !== 'application/octet-stream') return false;
+    return ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(fileExtension(file));
+  }
+
+  function isSupportedAttachment(file) {
+    return Boolean(
+      ATTACHMENT_EXTENSIONS.has(fileExtension(file))
+      || ATTACHMENT_CONTENT_TYPES.has(attachmentContentType(file)),
+    );
+  }
+
+  function clearSelectedAttachment() {
+    if (state.selectedAttachmentUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+      URL.revokeObjectURL(state.selectedAttachmentUrl);
+    }
+    state.selectedAttachmentFile = null;
+    state.selectedAttachmentUrl = '';
+    elements.attachmentInput.value = '';
+    elements.attachmentThumbnail.removeAttribute('src');
+    elements.attachmentThumbnail.classList.add('is-hidden');
+    elements.attachmentFileIcon.classList.add('is-hidden');
+    elements.attachmentName.textContent = '附件';
+    elements.attachmentPreview.classList.add('is-hidden');
+  }
+
+  function selectAttachment(file) {
+    if (!file) return;
+    const image = isImageAttachment(file);
+    const maxBytes = image ? MAX_IMAGE_BYTES : MAX_ATTACHMENT_BYTES;
+    if (file.size > maxBytes) {
+      elements.attachmentInput.value = '';
+      showToast(image ? '图片不能超过 10 MB。' : '附件不能超过 25 MB。', 'error');
+      return;
+    }
+    if (!isSupportedAttachment(file)) {
+      elements.attachmentInput.value = '';
+      showToast('支持图片、PDF、TXT/MD/CSV/JSON、Word 和 Excel 等常见文件。', 'error');
+      return;
+    }
+    if (state.selectedAttachmentUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+      URL.revokeObjectURL(state.selectedAttachmentUrl);
+    }
+    state.selectedAttachmentFile = file;
+    state.selectedAttachmentUrl = image && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
+      ? URL.createObjectURL(file)
+      : '';
+    elements.attachmentThumbnail.classList.toggle('is-hidden', !state.selectedAttachmentUrl);
+    elements.attachmentFileIcon.classList.toggle('is-hidden', image);
+    if (state.selectedAttachmentUrl) elements.attachmentThumbnail.src = state.selectedAttachmentUrl;
+    elements.attachmentName.textContent = file.name || '已选择附件';
+    elements.attachmentPreview.classList.remove('is-hidden');
+    elements.messageInput.focus();
   }
 
   function selectedSession() {
@@ -400,21 +559,29 @@
     event.preventDefault();
     if (state.sending) return;
     const text = elements.messageInput.value;
+    const attachmentFile = state.selectedAttachmentFile;
     if (!state.selectedPane) {
       showToast('请先选择一个 pane。', 'error');
       return;
     }
-    if (!text) return;
+    if (!text && !attachmentFile) return;
     const paneId = state.selectedPane;
     state.sending = true;
     elements.sendButton.disabled = true;
     try {
+      let attachmentId;
+      if (attachmentFile) {
+        showToast('附件上传中…');
+        const upload = await uploadAttachment(attachmentFile);
+        attachmentId = upload.attachmentId;
+      }
       await api(`/api/panes/${encodeURIComponent(paneId)}/input`, {
         method: 'POST',
-        body: { text, submit: true },
+        body: { text, submit: true, ...(attachmentId ? { attachmentId } : {}) },
       });
       elements.messageInput.value = '';
       elements.messageInput.style.height = 'auto';
+      clearSelectedAttachment();
       showToast('消息已发送', 'success');
       if (state.selectedPane === paneId) await loadOutput({ quiet: true });
     } catch (error) {
@@ -455,6 +622,8 @@
   elements.quickPaneSelect.addEventListener('change', () => {
     if (elements.quickPaneSelect.value) selectPane(elements.quickPaneSelect.value);
   });
+  elements.attachmentInput.addEventListener('change', () => selectAttachment(elements.attachmentInput.files?.[0]));
+  elements.removeAttachment.addEventListener('click', clearSelectedAttachment);
   elements.composerForm.addEventListener('submit', sendMessage);
   elements.messageInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey && !state.sending) {
