@@ -38,6 +38,8 @@ const PANE_FORMAT = [
   '#{pane_dead}',
   '#{pane_active}',
   '#{pane_pid}',
+  '#{pane_in_mode}',
+  '#{pane_mode}',
 ].join(DELIMITER);
 
 const ALLOWED_KEYS = new Set([
@@ -137,7 +139,7 @@ function hasSpinner(title) {
 }
 
 function parsePaneRows(output) {
-  return parseRows(output, 12).map(([
+  return parseRows(output, 14).map(([
     paneId,
     sessionName,
     windowIndex,
@@ -150,6 +152,8 @@ function parsePaneRows(output) {
     dead,
     active,
     pid,
+    inMode,
+    mode,
   ]) => ({
     id: paneId,
     sessionName,
@@ -163,6 +167,8 @@ function parsePaneRows(output) {
     dead: dead === '1',
     active: active === '1',
     pid: Number.parseInt(pid, 10) || 0,
+    inMode: inMode === '1',
+    mode: mode || '',
     codex: isCodexPane({ currentCommand, title }),
     busy: hasSpinner(title),
   }));
@@ -181,6 +187,8 @@ function publicPane(pane) {
     height: pane.height,
     dead: pane.dead,
     active: pane.active,
+    inMode: pane.inMode,
+    mode: pane.mode,
     codex: pane.codex,
     busy: pane.busy,
   };
@@ -289,7 +297,7 @@ async function pasteText(tmuxRunner, paneId, text) {
   try {
     await fsp.writeFile(inputPath, text, 'utf8');
     await tmuxRunner(['load-buffer', '-b', bufferName, inputPath]);
-    await tmuxRunner(['paste-buffer', '-d', '-b', bufferName, '-t', paneId]);
+    await tmuxRunner(['paste-buffer', '-d', '-p', '-b', bufferName, '-t', paneId]);
   } finally {
     await fsp.rm(tempDir, { recursive: true, force: true });
   }
@@ -300,6 +308,11 @@ async function sendKey(tmuxRunner, paneId, key) {
     throw new ApiError(400, 'Key is not allowed', '这个控制键不在允许列表中。');
   }
   await tmuxRunner(['send-keys', '-t', paneId, key]);
+}
+
+async function cancelPaneMode(tmuxRunner, pane) {
+  if (!pane.inMode || !['copy-mode', 'view-mode'].includes(pane.mode)) return;
+  await tmuxRunner(['send-keys', '-X', '-t', pane.id, 'cancel']);
 }
 
 function readJsonBody(req) {
@@ -407,6 +420,17 @@ function createRemoteToolServer({
     throw new Error('A non-empty access token is required.');
   }
 
+  const paneMutationQueues = new Map();
+  const queuePaneMutation = (paneId, operation) => {
+    const previous = paneMutationQueues.get(paneId) || Promise.resolve();
+    const queued = previous.catch(() => undefined).then(operation);
+    const tracked = queued.finally(() => {
+      if (paneMutationQueues.get(paneId) === tracked) paneMutationQueues.delete(paneId);
+    });
+    paneMutationQueues.set(paneId, tracked);
+    return tracked;
+  };
+
   const server = http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url || '/', 'http://localhost');
     const pathname = requestUrl.pathname;
@@ -466,17 +490,22 @@ function createRemoteToolServer({
           if (!text && !submit) {
             throw new ApiError(400, 'Input is empty', '请输入内容，或选择一个控制键。');
           }
-          await findPane(tmuxRunner, paneId);
-          if (text) await pasteText(tmuxRunner, paneId, text);
-          if (submit) await sendKey(tmuxRunner, paneId, 'Enter');
+          await queuePaneMutation(paneId, async () => {
+            const pane = await findPane(tmuxRunner, paneId);
+            await cancelPaneMode(tmuxRunner, pane);
+            if (text) await pasteText(tmuxRunner, paneId, text);
+            if (submit) await sendKey(tmuxRunner, paneId, 'Enter');
+          });
           sendJson(res, 200, { ok: true });
           return;
         }
 
         if (req.method === 'POST' && action === 'key' && parts.length === 4) {
           const body = await readJsonBody(req);
-          await findPane(tmuxRunner, paneId);
-          await sendKey(tmuxRunner, paneId, body.key);
+          await queuePaneMutation(paneId, async () => {
+            await findPane(tmuxRunner, paneId);
+            await sendKey(tmuxRunner, paneId, body.key);
+          });
           sendJson(res, 200, { ok: true });
           return;
         }
@@ -517,7 +546,7 @@ function start() {
   const { server, token } = createRemoteToolServer();
   server.listen(port, host, () => {
     const addresses = networkAddresses();
-    console.log(`tmux relay listening on ${host}:${port}`);
+    console.log(`pocketmux listening on ${host}:${port}`);
     console.log(`Access token: ${token}`);
     if (addresses.length > 0) {
       console.log('Open on your phone:');

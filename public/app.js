@@ -8,8 +8,13 @@
     selectedPane: '',
     output: '',
     polling: false,
+    outputRefreshQueued: false,
+    outputRefreshForceBottom: false,
     refreshing: false,
+    sending: false,
   };
+
+  const TERMINAL_BOTTOM_THRESHOLD = 24;
 
   const elements = {
     authGate: document.querySelector('#auth-gate'),
@@ -105,6 +110,40 @@
 
   function selectedSession() {
     return state.sessions.find((session) => session.name === state.selectedSession) || null;
+  }
+
+  function pageScrollElement() {
+    return document.scrollingElement || document.documentElement;
+  }
+
+  function terminalScrollElement() {
+    const isMobileLayout = typeof window.matchMedia === 'function'
+      && window.matchMedia('(max-width: 780px)').matches;
+    return isMobileLayout ? pageScrollElement() : elements.terminalWrap;
+  }
+
+  function isTerminalAtBottom() {
+    const scrollElement = terminalScrollElement();
+    const distanceFromBottom = scrollElement.scrollHeight
+      - scrollElement.scrollTop
+      - scrollElement.clientHeight;
+    return distanceFromBottom <= TERMINAL_BOTTOM_THRESHOLD;
+  }
+
+  function scrollTerminalToBottom() {
+    const scrollElement = terminalScrollElement();
+    scrollElement.scrollTop = scrollElement.scrollHeight;
+  }
+
+  function scheduleScrollTerminalToBottom() {
+    scrollTerminalToBottom();
+    const schedule = typeof window.requestAnimationFrame === 'function'
+      ? window.requestAnimationFrame.bind(window)
+      : (callback) => window.setTimeout(callback, 0);
+    schedule(() => {
+      scrollTerminalToBottom();
+      schedule(scrollTerminalToBottom);
+    });
   }
 
   function selectedPane() {
@@ -254,18 +293,25 @@
     try {
       const payload = await api('/api/sessions');
       state.sessions = payload.sessions || [];
+      let selectionChanged = false;
       const current = selectedSession();
       if (!current) {
-        state.selectedSession = state.sessions[0]?.name || '';
+        const nextSession = state.sessions[0]?.name || '';
+        selectionChanged = nextSession !== state.selectedSession;
+        state.selectedSession = nextSession;
       }
       const nextSession = selectedSession();
       if (!nextSession?.panes.some((pane) => pane.id === state.selectedPane)) {
-        state.selectedPane = nextSession?.panes.find((pane) => pane.codex)?.id || nextSession?.panes[0]?.id || '';
+        const nextPane = nextSession?.panes.find((pane) => pane.codex)?.id || nextSession?.panes[0]?.id || '';
+        selectionChanged = selectionChanged || nextPane !== state.selectedPane;
+        state.selectedPane = nextPane;
         state.output = '';
       }
       renderAll();
       setConnection('已连接', 'online');
-      if (!quiet && state.selectedPane) await loadOutput({ quiet: true });
+      if (state.selectedPane && (!quiet || selectionChanged)) {
+        await loadOutput({ quiet: true, forceScrollBottom: selectionChanged });
+      }
     } catch (error) {
       if (error.unauthorized) {
         forgetToken();
@@ -278,18 +324,24 @@
     }
   }
 
-  async function loadOutput({ quiet = false } = {}) {
+  async function loadOutput({ quiet = false, forceScrollBottom = false } = {}) {
     const paneId = state.selectedPane;
-    if (!paneId || state.polling) return;
+    if (!paneId) return;
+    if (state.polling) {
+      state.outputRefreshQueued = true;
+      state.outputRefreshForceBottom = state.outputRefreshForceBottom || forceScrollBottom;
+      return;
+    }
     state.polling = true;
     try {
       const payload = await api(`/api/panes/${encodeURIComponent(paneId)}/output?lines=240`);
       if (state.selectedPane !== paneId) return;
+      const shouldScrollToBottom = forceScrollBottom || isTerminalAtBottom();
       state.output = payload.output || '';
       elements.terminalOutput.textContent = state.output;
       renderTerminalMeta();
       elements.lastUpdated.textContent = `更新于 ${new Date(payload.now || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
-      elements.terminalWrap.scrollTop = elements.terminalWrap.scrollHeight;
+      if (shouldScrollToBottom) scheduleScrollTerminalToBottom();
       setConnection('已连接', 'online');
     } catch (error) {
       if (error.unauthorized) {
@@ -300,6 +352,13 @@
       }
     } finally {
       state.polling = false;
+      const refreshQueued = state.outputRefreshQueued && Boolean(state.selectedPane);
+      const forceQueuedRefreshToBottom = state.outputRefreshForceBottom;
+      state.outputRefreshQueued = false;
+      state.outputRefreshForceBottom = false;
+      if (refreshQueued) {
+        void loadOutput({ quiet: true, forceScrollBottom: forceQueuedRefreshToBottom });
+      }
     }
   }
 
@@ -309,14 +368,14 @@
     state.selectedPane = session?.panes.find((pane) => pane.codex)?.id || session?.panes[0]?.id || '';
     state.output = '';
     renderAll();
-    await loadOutput();
+    await loadOutput({ forceScrollBottom: true });
   }
 
   async function selectPane(id) {
     state.selectedPane = id;
     state.output = '';
     renderAll();
-    await loadOutput();
+    await loadOutput({ forceScrollBottom: true });
   }
 
   async function sendKey(key) {
@@ -339,26 +398,30 @@
 
   async function sendMessage(event) {
     event.preventDefault();
+    if (state.sending) return;
     const text = elements.messageInput.value;
     if (!state.selectedPane) {
       showToast('请先选择一个 pane。', 'error');
       return;
     }
     if (!text) return;
+    const paneId = state.selectedPane;
+    state.sending = true;
     elements.sendButton.disabled = true;
     try {
-      await api(`/api/panes/${encodeURIComponent(state.selectedPane)}/input`, {
+      await api(`/api/panes/${encodeURIComponent(paneId)}/input`, {
         method: 'POST',
         body: { text, submit: true },
       });
       elements.messageInput.value = '';
       elements.messageInput.style.height = 'auto';
       showToast('消息已发送', 'success');
-      await loadOutput({ quiet: true });
+      if (state.selectedPane === paneId) await loadOutput({ quiet: true });
     } catch (error) {
       if (error.unauthorized) forgetToken();
       else showToast(error.message, 'error');
     } finally {
+      state.sending = false;
       elements.sendButton.disabled = false;
       elements.messageInput.focus();
     }
@@ -394,7 +457,7 @@
   });
   elements.composerForm.addEventListener('submit', sendMessage);
   elements.messageInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.key === 'Enter' && !event.shiftKey && !state.sending) {
       event.preventDefault();
       elements.composerForm.requestSubmit();
     }

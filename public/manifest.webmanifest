@@ -1,6 +1,6 @@
 {
-  "name": "tmux relay",
-  "short_name": "tmux relay",
+  "name": "pocketmux",
+  "short_name": "pocketmux",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#111317",
