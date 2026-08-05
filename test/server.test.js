@@ -3,28 +3,35 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
+const os = require('node:os');
 const fsp = require('node:fs/promises');
 
 const {
   buildSessionTree,
   createRemoteToolServer,
   isAllowedKey,
+  PANE_FORMAT,
   parsePaneRows,
 } = require('../server');
 
 const delimiter = '\t';
 
-function paneRow({ id = '%1', session = 'leo_lab', window = '0', windowName = 'exec', index = '0', command = 'node', title = 'codex | leo_lab', inMode = '0', mode = '' } = {}) {
-  return [id, session, window, windowName, index, command, title, '120', '40', '0', '1', '1234', inMode, mode].join(delimiter);
+function paneRow({ id = '%1', session = 'leo_lab', window = '0', windowName = 'exec', index = '0', command = 'node', title = 'codex | leo_lab', inMode = '0', mode = '', pocketmuxName = '' } = {}) {
+  return [id, session, window, windowName, index, command, title, '120', '40', '0', '1', '1234', inMode, mode, pocketmuxName].join(delimiter);
 }
 
-function fakeTmux({ pane = {} } = {}) {
+function fakeTmux({ pane = {}, otherPanes } = {}) {
   const calls = [];
   const loadedBuffers = [];
+  const paneRows = [
+    paneRow(pane),
+    ...(otherPanes || [{ id: '%2', window: '1', windowName: 'box', title: 'codex | leo_lab' }]).map((otherPane) => paneRow(otherPane)),
+  ];
   const runner = async (args) => {
     calls.push(args);
     if (args[0] === 'list-sessions') return ['deploy', '5', '1'].join(delimiter) + '\n' + ['leo_lab', '9', '1'].join(delimiter) + '\n';
-    if (args[0] === 'list-panes') return paneRow(pane) + '\n' + paneRow({ id: '%2', window: '1', windowName: 'box', title: 'codex | leo_lab' }) + '\n';
+    if (args[0] === 'list-panes') return `${paneRows.join('\n')}\n`;
+    if (args[0] === 'new-window') return '%3\n';
     if (args[0] === 'load-buffer') {
       loadedBuffers.push(await fsp.readFile(args.at(-1), 'utf8'));
     }
@@ -46,6 +53,9 @@ test('parses tmux pane rows and identifies Codex panes', () => {
   assert.equal(codex.codex, true);
   assert.equal(shell.codex, false);
   assert.equal(codex.width, 120);
+
+  const [namedPane] = parsePaneRows(paneRow({ pocketmuxName: 'shell-tools' }));
+  assert.equal(namedPane.pocketmuxName, 'shell-tools');
 
   const [copyModePane] = parsePaneRows(paneRow({ inMode: '1', mode: 'copy-mode' }));
   assert.equal(copyModePane.inMode, true);
@@ -71,6 +81,191 @@ test('only allows the explicit control-key allowlist', () => {
   assert.equal(isAllowedKey('Enter'), true);
   assert.equal(isAllowedKey('rm -rf /'), false);
   assert.equal(isAllowedKey('C-x'), false);
+});
+
+test('creates a named zsh window after the selected session last window', async (t) => {
+  const { calls, runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const response = await fetch(`${base}/api/windows`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paneId: '%1', name: ' shell-tools ' }),
+  });
+  assert.equal(response.status, 201);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    paneId: '%3',
+    sessionName: 'leo_lab',
+    name: 'shell-tools',
+  });
+
+  assert.deepEqual(calls.at(-2), [
+    'new-window',
+    '-a',
+    '-d',
+    '-P',
+    '-F',
+    '#{pane_id}',
+    '-c',
+    os.homedir(),
+    '-n',
+    'shell-tools',
+    '-t',
+    'leo_lab:1',
+    'zsh',
+  ]);
+  assert.deepEqual(calls.at(-1), ['set-option', '-p', '-t', '%3', '@pocketmux_name', 'shell-tools']);
+
+  const callsBeforeInvalidName = calls.length;
+  const invalidName = await fetch(`${base}/api/windows`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paneId: '%1', name: '   ' }),
+  });
+  assert.equal(invalidName.status, 400);
+  assert.equal(calls.length, callsBeforeInvalidName);
+
+  const legacyRoute = await fetch(`${base}/api/panes`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paneId: '%1', name: 'legacy-shell' }),
+  });
+  assert.equal(legacyRoute.status, 201);
+  assert.equal((await legacyRoute.json()).name, 'legacy-shell');
+  assert.equal(calls.at(-2)[0], 'new-window');
+});
+
+test('deletes any live standalone window, including existing non-Pocketmux windows', async (t) => {
+  const { calls, runner } = fakeTmux({
+    pane: { command: 'zsh', title: 'zsh', pocketmuxName: 'shell-tools' },
+  });
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+  const headers = { Authorization: 'Bearer test-token' };
+
+  const response = await fetch(`${base}/api/windows/%251`, {
+    method: 'DELETE',
+    headers,
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    paneId: '%1',
+    sessionName: 'leo_lab',
+    windowIndex: 0,
+    name: 'shell-tools',
+  });
+  assert.deepEqual(calls.at(-1), ['kill-window', '-t', 'leo_lab:0']);
+
+  const existingResponse = await fetch(`${base}/api/windows/%252`, {
+    method: 'DELETE',
+    headers,
+  });
+  assert.equal(existingResponse.status, 200);
+  assert.deepEqual(await existingResponse.json(), {
+    ok: true,
+    paneId: '%2',
+    sessionName: 'leo_lab',
+    windowIndex: 1,
+    name: 'box',
+  });
+  assert.deepEqual(calls.at(-1), ['kill-window', '-t', 'leo_lab:1']);
+});
+
+test('deletes an existing zsh window without Pocketmux metadata', async (t) => {
+  const { calls, runner } = fakeTmux({
+    pane: { command: 'zsh', title: 'zsh' },
+  });
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const response = await fetch(`${base}/api/windows/%251`, {
+    method: 'DELETE',
+    headers: { Authorization: 'Bearer test-token' },
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).name, 'exec');
+  assert.deepEqual(calls.at(-1), ['kill-window', '-t', 'leo_lab:0']);
+});
+
+test('protects windows containing multiple panes from deletion', async (t) => {
+  const { calls, runner } = fakeTmux({
+    pane: { command: 'zsh', title: 'zsh' },
+    otherPanes: [{ id: '%2', window: '0', windowName: 'split', index: '1', command: 'zsh', title: 'zsh' }],
+  });
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const response = await fetch(`${base}/api/windows/%251`, {
+    method: 'DELETE',
+    headers: { Authorization: 'Bearer test-token' },
+  });
+  assert.equal(response.status, 409);
+  assert.deepEqual(calls.at(-1), ['list-panes', '-a', '-F', PANE_FORMAT]);
+});
+
+test('previews and accepts autosuggestions only on an interactive zsh pane', async (t) => {
+  const { calls, loadedBuffers, runner } = fakeTmux({ pane: { command: 'zsh', title: 'zsh' } });
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+  const headers = { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' };
+
+  const preview = await fetch(`${base}/api/panes/%251/suggest`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ text: 'git che' }),
+  });
+  assert.equal(preview.status, 200);
+  assert.deepEqual(loadedBuffers, []);
+  const previewMutations = calls.filter((args) => args[0] === 'send-keys');
+  assert.deepEqual(previewMutations, [['send-keys', '-l', '-t', '%1', '--', 'git che']]);
+
+  const completion = await fetch(`${base}/api/panes/%251/complete`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ text: 'git che' }),
+  });
+  assert.equal(completion.status, 200);
+  assert.deepEqual(loadedBuffers, []);
+  const completionMutations = calls.filter((args) => args[0] === 'send-keys');
+  assert.deepEqual(completionMutations, [
+    ['send-keys', '-l', '-t', '%1', '--', 'git che'],
+    ['send-keys', '-l', '-t', '%1', '--', 'git che'],
+    ['send-keys', '-t', '%1', 'Right'],
+  ]);
+
+  const execute = await fetch(`${base}/api/panes/%251/key`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ key: 'Enter' }),
+  });
+  assert.equal(execute.status, 200);
+  assert.deepEqual(calls.filter((args) => args[0] === 'send-keys').at(-1), [
+    'send-keys', '-t', '%1', 'Enter',
+  ]);
+
+  const codexCompletion = await fetch(`${base}/api/panes/%252/complete`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ text: 'git che' }),
+  });
+  assert.equal(codexCompletion.status, 409);
+  assert.deepEqual(loadedBuffers, []);
+
+  const emptyCompletion = await fetch(`${base}/api/panes/%251/complete`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ text: 'git\nche' }),
+  });
+  assert.equal(emptyCompletion.status, 400);
+  assert.deepEqual(loadedBuffers, []);
 });
 
 test('protects APIs with a token and supports session/output/input flows', async (t) => {

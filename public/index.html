@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#111317">
     <meta name="description" content="从手机查看和控制电脑上的 tmux / Codex 会话">
     <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/styles.css?v=20260804-attachments">
+    <link rel="stylesheet" href="/styles.css?v=20260805-window-delete">
     <title>pocketmux</title>
   </head>
   <body>
@@ -86,10 +86,26 @@
                   <div class="section-kicker">WINDOWS / PANES</div>
                   <h3 id="pane-heading">工作区</h3>
                 </div>
-                <span id="pane-count" class="muted-label">0 个 pane</span>
+                <div class="pane-section-actions">
+                  <span id="pane-count" class="muted-label">0 个 pane</span>
+                  <button id="new-window-button" class="new-window-button" type="button">＋ 新建 zsh</button>
+                  <button id="delete-window-button" class="new-window-button delete-window-button" type="button">− 删除窗口</button>
+                </div>
               </div>
               <div id="pane-list" class="pane-list" role="list"></div>
             </section>
+
+            <dialog id="new-window-dialog" class="window-dialog" aria-labelledby="new-window-heading">
+              <form id="new-window-form" class="window-dialog-form">
+                <h3 id="new-window-heading">新建 zsh 窗口</h3>
+                <label for="new-window-name">窗口名称</label>
+                <input id="new-window-name" type="text" maxlength="64" required placeholder="例如：zsh" autocomplete="off">
+                <div class="window-dialog-actions">
+                  <button id="cancel-new-window" class="dialog-button" type="button">取消</button>
+                  <button id="create-window-button" class="dialog-button primary" type="submit">创建窗口</button>
+                </div>
+              </form>
+            </dialog>
 
             <section class="terminal-card" aria-labelledby="terminal-heading">
               <div class="terminal-heading">
@@ -111,6 +127,7 @@
                   <button class="shortcut-button danger" type="button" data-key="C-c">Ctrl-C</button>
                   <button class="shortcut-button" type="button" data-key="Escape">Esc</button>
                   <button class="shortcut-button" type="button" data-key="C-l">清屏</button>
+                  <button id="zsh-complete-button" class="shortcut-button is-hidden" type="button" aria-label="显示 zsh 补全建议">显示补全</button>
                   <button class="shortcut-button" type="button" data-key="Up">↑</button>
                   <button class="shortcut-button" type="button" data-key="Down">↓</button>
                   <button class="shortcut-button" type="button" data-key="Enter">Enter</button>
@@ -128,11 +145,10 @@
                 <form id="composer-form" class="composer-form">
                   <label class="attach-button" for="attachment-input" title="选择附件">附件</label>
                   <input id="attachment-input" class="sr-only" type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.xml,.yaml,.yml,.rtf,.log,.doc,.docx,.xls,.xlsx,.ppt,.pptx">
-                  <label class="sr-only" for="message-input">发送到当前 Codex pane</label>
+                  <label class="sr-only" for="message-input">发送到当前 pane</label>
                   <textarea id="message-input" rows="1" placeholder="给当前 pane 发送消息…（Enter 发送，Shift+Enter 换行）" autocomplete="off" spellcheck="false"></textarea>
                   <button id="send-button" class="send-button" type="submit" aria-label="发送消息">↑</button>
                 </form>
-                <div class="composer-hint"><span>目标</span><code id="target-label">—</code><span class="hint-separator">·</span><span>附件会保存在运行 pocketmux 的电脑上并交给 Codex 分析</span></div>
               </div>
             </section>
           </main>
@@ -141,6 +157,6 @@
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </div>
     <noscript>需要启用 JavaScript 才能使用 pocketmux。</noscript>
-    <script src="/app.js?v=20260804-attachments" defer></script>
+    <script src="/app.js?v=20260805-window-delete" defer></script>
   </body>
 </html>

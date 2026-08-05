@@ -21,6 +21,7 @@ const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const ATTACHMENT_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_INPUT_CHARS = 8000;
 const MAX_COMPOSED_INPUT_CHARS = 12000;
+const MAX_WINDOW_NAME_CHARS = 64;
 const DEFAULT_OUTPUT_LINES = 240;
 const MAX_OUTPUT_LINES = 600;
 const DEFAULT_PORT = 3789;
@@ -106,6 +107,7 @@ const PANE_FORMAT = [
   '#{pane_pid}',
   '#{pane_in_mode}',
   '#{pane_mode}',
+  '#{@pocketmux_name}',
 ].join(DELIMITER);
 
 const ALLOWED_KEYS = new Set([
@@ -205,7 +207,7 @@ function hasSpinner(title) {
 }
 
 function parsePaneRows(output) {
-  return parseRows(output, 14).map(([
+  return parseRows(output, 15).map(([
     paneId,
     sessionName,
     windowIndex,
@@ -220,6 +222,7 @@ function parsePaneRows(output) {
     pid,
     inMode,
     mode,
+    pocketmuxName,
   ]) => ({
     id: paneId,
     sessionName,
@@ -235,6 +238,7 @@ function parsePaneRows(output) {
     pid: Number.parseInt(pid, 10) || 0,
     inMode: inMode === '1',
     mode: mode || '',
+    pocketmuxName: pocketmuxName || '',
     codex: isCodexPane({ currentCommand, title }),
     busy: hasSpinner(title),
   }));
@@ -255,6 +259,7 @@ function publicPane(pane) {
     active: pane.active,
     inMode: pane.inMode,
     mode: pane.mode,
+    pocketmuxName: pane.pocketmuxName,
     codex: pane.codex,
     busy: pane.busy,
   };
@@ -327,6 +332,32 @@ function isValidPaneId(value) {
   return /^%\d+$/.test(value);
 }
 
+function isZshPane(pane) {
+  return Boolean(
+    pane
+    && !pane.dead
+    && !pane.codex
+    && String(pane.currentCommand || '').trim().toLowerCase() === 'zsh',
+  );
+}
+
+function normalizeWindowName(value) {
+  if (typeof value !== 'string') {
+    throw new ApiError(400, 'Window name is required', '请输入窗口名称。');
+  }
+  const name = value.trim();
+  if (!name) {
+    throw new ApiError(400, 'Window name is empty', '请输入窗口名称。');
+  }
+  if (name.length > MAX_WINDOW_NAME_CHARS) {
+    throw new ApiError(400, 'Window name is too long', '窗口名称不能超过 64 个字符。');
+  }
+  if (/[\u0000-\u001f\u007f]/u.test(name)) {
+    throw new ApiError(400, 'Window name contains control characters', '窗口名称不能包含控制字符。');
+  }
+  return name;
+}
+
 function isAllowedKey(value) {
   return ALLOWED_KEYS.has(value);
 }
@@ -369,11 +400,131 @@ async function pasteText(tmuxRunner, paneId, text) {
   }
 }
 
+// Bracketed paste is deliberately kept for normal messages, but zsh
+// autosuggestions do not refresh reliably while a bracketed paste is active.
+// Send validated single-line completion text as literal keystrokes instead so
+// zsh can render its suggestion in the pane before the user accepts it.
+async function typeLiteralText(tmuxRunner, paneId, text) {
+  await tmuxRunner(['send-keys', '-l', '-t', paneId, '--', text]);
+}
+
 async function sendKey(tmuxRunner, paneId, key) {
   if (!isAllowedKey(key)) {
     throw new ApiError(400, 'Key is not allowed', '这个控制键不在允许列表中。');
   }
   await tmuxRunner(['send-keys', '-t', paneId, key]);
+}
+
+async function findLastWindowPane(tmuxRunner, sessionName) {
+  const panes = parsePaneRows(await tmuxRunner(['list-panes', '-a', '-F', PANE_FORMAT]))
+    .filter((pane) => pane.sessionName === sessionName);
+  if (panes.length === 0) {
+    throw new ApiError(404, 'Session not found', '这个 tmux 会话已经不存在，可能被关闭了。');
+  }
+  return panes.reduce((last, pane) => (
+    pane.windowIndex > last.windowIndex
+      || (pane.windowIndex === last.windowIndex && pane.paneIndex > last.paneIndex)
+      ? pane
+      : last
+  ));
+}
+
+async function createZshWindow(tmuxRunner, paneId, name) {
+  const parent = await findPane(tmuxRunner, paneId);
+  const lastWindowPane = await findLastWindowPane(tmuxRunner, parent.sessionName);
+  const output = await tmuxRunner([
+    'new-window',
+    '-a',
+    '-d',
+    '-P',
+    '-F',
+    '#{pane_id}',
+    '-c',
+    os.homedir(),
+    '-n',
+    name,
+    '-t',
+    `${lastWindowPane.sessionName}:${lastWindowPane.windowIndex}`,
+    'zsh',
+  ]);
+  const createdPaneId = String(output || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((candidate) => isValidPaneId(candidate));
+  if (!createdPaneId) {
+    throw new ApiError(502, 'tmux did not return the new window pane id', '新 zsh 窗口创建失败，请重试。');
+  }
+  try {
+    await tmuxRunner(['set-option', '-p', '-t', createdPaneId, '@pocketmux_name', name]);
+  } catch (error) {
+    await tmuxRunner(['kill-pane', '-t', createdPaneId]).catch(() => undefined);
+    throw error;
+  }
+  return {
+    paneId: createdPaneId,
+    sessionName: parent.sessionName,
+    name,
+  };
+}
+
+async function deleteWindow(tmuxRunner, paneId) {
+  const pane = await findPane(tmuxRunner, paneId);
+  if (pane.dead) {
+    throw new ApiError(409, 'Pane is dead', '这个窗口中的进程已经退出，无法删除。');
+  }
+
+  const windowPanes = parsePaneRows(await tmuxRunner(['list-panes', '-a', '-F', PANE_FORMAT]))
+    .filter((candidate) => (
+      candidate.sessionName === pane.sessionName
+      && candidate.windowIndex === pane.windowIndex
+    ));
+  if (windowPanes.length !== 1) {
+    throw new ApiError(409, 'Window contains multiple panes', '这个窗口包含多个 pane，为避免误删，暂不允许删除。');
+  }
+
+  await tmuxRunner([
+    'kill-window',
+    '-t',
+    `${pane.sessionName}:${pane.windowIndex}`,
+  ]);
+  return {
+    paneId: pane.id,
+    sessionName: pane.sessionName,
+    windowIndex: pane.windowIndex,
+    name: pane.pocketmuxName || pane.windowName || `window-${pane.windowIndex}`,
+  };
+}
+
+function validateZshCompletionText(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new ApiError(400, 'Completion text is empty', '请输入要补全的命令片段。');
+  }
+  if (value.length > MAX_INPUT_CHARS) {
+    throw new ApiError(413, 'Completion text is too long', '补全内容不能超过 8000 个字符。');
+  }
+  if (/[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new ApiError(400, 'Completion text contains control characters', '补全内容不能包含换行或控制字符。');
+  }
+  return value;
+}
+
+async function completeZsh(tmuxRunner, paneId, text) {
+  const pane = await findPane(tmuxRunner, paneId);
+  if (!isZshPane(pane)) {
+    throw new ApiError(409, 'Pane is not an interactive zsh pane', '只有 zsh pane 支持命令补全。');
+  }
+  await cancelPaneMode(tmuxRunner, pane);
+  await typeLiteralText(tmuxRunner, paneId, text);
+  await sendKey(tmuxRunner, paneId, 'Right');
+}
+
+async function previewZsh(tmuxRunner, paneId, text) {
+  const pane = await findPane(tmuxRunner, paneId);
+  if (!isZshPane(pane)) {
+    throw new ApiError(409, 'Pane is not an interactive zsh pane', '只有 zsh pane 支持命令补全。');
+  }
+  await cancelPaneMode(tmuxRunner, pane);
+  await typeLiteralText(tmuxRunner, paneId, text);
 }
 
 async function cancelPaneMode(tmuxRunner, pane) {
@@ -597,7 +748,7 @@ async function serveStatic(res, pathname) {
     const body = await fsp.readFile(filePath);
     res.writeHead(200, {
       'Content-Type': contentTypeFor(filePath),
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
     });
     res.end(body);
@@ -657,7 +808,7 @@ function createRemoteToolServer({
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
         'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-File-Name',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Methods': 'DELETE, GET, POST, OPTIONS',
       });
       res.end();
       return;
@@ -702,6 +853,30 @@ function createRemoteToolServer({
         return;
       }
 
+      // Keep the old route as a compatibility alias for tabs opened before
+      // named panes were migrated to standalone zsh windows.
+      if (req.method === 'POST' && parts.length === 2 && ['windows', 'panes'].includes(parts[1])) {
+        const body = await readJsonBody(req);
+        const paneId = typeof body.paneId === 'string' ? body.paneId : '';
+        if (!isValidPaneId(paneId)) {
+          throw new ApiError(400, 'Invalid pane id', '无效的 pane 标识。');
+        }
+        const name = normalizeWindowName(body.name);
+        const created = await queuePaneMutation(paneId, () => createZshWindow(tmuxRunner, paneId, name));
+        sendJson(res, 201, { ok: true, ...created });
+        return;
+      }
+
+      if (req.method === 'DELETE' && parts.length === 3 && parts[1] === 'windows') {
+        const paneId = parts[2];
+        if (!isValidPaneId(paneId)) {
+          throw new ApiError(400, 'Invalid pane id', '无效的 pane 标识。');
+        }
+        const deleted = await queuePaneMutation(paneId, () => deleteWindow(tmuxRunner, paneId));
+        sendJson(res, 200, { ok: true, ...deleted });
+        return;
+      }
+
       if (parts.length >= 4 && parts[1] === 'panes') {
         const paneId = parts[2];
         const action = parts[3];
@@ -712,6 +887,22 @@ function createRemoteToolServer({
             output,
             now: new Date().toISOString(),
           });
+          return;
+        }
+
+        if (req.method === 'POST' && action === 'complete' && parts.length === 4) {
+          const body = await readJsonBody(req);
+          const text = validateZshCompletionText(body.text);
+          await queuePaneMutation(paneId, () => completeZsh(tmuxRunner, paneId, text));
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+
+        if (req.method === 'POST' && action === 'suggest' && parts.length === 4) {
+          const body = await readJsonBody(req);
+          const text = validateZshCompletionText(body.text);
+          await queuePaneMutation(paneId, () => previewZsh(tmuxRunner, paneId, text));
+          sendJson(res, 200, { ok: true });
           return;
         }
 
