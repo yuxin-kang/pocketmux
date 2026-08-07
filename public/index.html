@@ -53,9 +53,9 @@
         <div id="mobile-switcher" class="mobile-switcher" aria-label="快速切换会话与 Pane">
           <span class="mobile-switcher-label">切换</span>
           <label class="sr-only" for="quick-session-select">快速切换 tmux 会话</label>
-          <select id="quick-session-select" aria-label="快速切换 tmux 会话"></select>
+          <select id="quick-session-select" aria-label="快速切换 tmux 会话" disabled></select>
           <label class="sr-only" for="quick-pane-select">快速切换当前会话的 Pane</label>
-          <select id="quick-pane-select" aria-label="快速切换当前会话的 Pane"></select>
+          <select id="quick-pane-select" aria-label="快速切换当前会话的 Pane" disabled></select>
         </div>
 
         <div class="workspace">
@@ -157,6 +157,6 @@
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </div>
     <noscript>需要启用 JavaScript 才能使用 pocketmux。</noscript>
-    <script src="/app.js?v=20260805-window-delete" defer></script>
+    <script src="/app.js?v=20260807-switcher-stable" defer></script>
   </body>
 </html>

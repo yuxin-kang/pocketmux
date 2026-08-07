@@ -485,45 +485,44 @@
     renderComposerState();
   }
 
+  function syncSelectOptions(select, options, selectedValue, disabled) {
+    const signature = JSON.stringify(options.map(({ value, label }) => [value, label]));
+    if (select.dataset.optionsSignature !== signature) {
+      const fragment = document.createDocumentFragment();
+      for (const { value, label } of options) {
+        const option = makeElement('option', '', label);
+        option.value = value;
+        fragment.append(option);
+      }
+      select.replaceChildren(fragment);
+      select.dataset.optionsSignature = signature;
+    }
+
+    select.disabled = disabled;
+    if (select.value !== selectedValue && options.some((option) => option.value === selectedValue)) {
+      select.value = selectedValue;
+    }
+  }
+
   function renderQuickSwitcher() {
     const sessionSelect = elements.quickSessionSelect;
     const paneSelect = elements.quickPaneSelect;
     if (!sessionSelect || !paneSelect) return;
 
-    sessionSelect.replaceChildren();
-    if (state.sessions.length === 0) {
-      const option = makeElement('option', '', '暂无会话');
-      option.value = '';
-      sessionSelect.append(option);
-      sessionSelect.disabled = true;
-    } else {
-      for (const session of state.sessions) {
-        const option = makeElement('option', '', session.name);
-        option.value = session.name;
-        sessionSelect.append(option);
-      }
-      sessionSelect.disabled = false;
-      sessionSelect.value = state.selectedSession;
-    }
+    const sessionOptions = state.sessions.length > 0
+      ? state.sessions.map((session) => ({ value: session.name, label: session.name }))
+      : [{ value: '', label: '暂无会话' }];
+    syncSelectOptions(sessionSelect, sessionOptions, state.selectedSession, state.sessions.length === 0);
 
-    paneSelect.replaceChildren();
     const session = selectedSession();
     const panes = session?.panes || [];
-    if (panes.length === 0) {
-      const option = makeElement('option', '', '暂无 Pane');
-      option.value = '';
-      paneSelect.append(option);
-      paneSelect.disabled = true;
-    } else {
-      for (const pane of panes) {
-        const label = `${pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`} · ${pane.id}`;
-        const option = makeElement('option', '', label);
-        option.value = pane.id;
-        paneSelect.append(option);
-      }
-      paneSelect.disabled = false;
-      paneSelect.value = state.selectedPane;
-    }
+    const paneOptions = panes.length > 0
+      ? panes.map((pane) => ({
+        value: pane.id,
+        label: pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`,
+      }))
+      : [{ value: '', label: '暂无 Pane' }];
+    syncSelectOptions(paneSelect, paneOptions, state.selectedPane, panes.length === 0);
   }
 
   function renderAll() {
