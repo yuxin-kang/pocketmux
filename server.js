@@ -795,6 +795,8 @@ function contentTypeFor(filePath) {
     '.html': 'text/html; charset=utf-8',
     '.js': 'text/javascript; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
+    '.ico': 'image/x-icon',
+    '.png': 'image/png',
     '.webmanifest': 'application/manifest+json; charset=utf-8',
   }[extension] || 'application/octet-stream';
 }
@@ -806,6 +808,10 @@ async function serveStatic(res, pathname) {
     '/app-helpers.js': 'app-helpers.js',
     '/app.js': 'app.js',
     '/styles.css': 'styles.css',
+    '/favicon.ico': 'favicon.ico',
+    '/assets/pocketmux-icon.png': 'assets/pocketmux-icon.png',
+    '/assets/pocketmux-icon-192.png': 'assets/pocketmux-icon-192.png',
+    '/assets/pocketmux-icon-512.png': 'assets/pocketmux-icon-512.png',
     '/manifest.webmanifest': 'manifest.webmanifest',
   };
   const fileName = files[pathname];
@@ -818,6 +824,7 @@ async function serveStatic(res, pathname) {
     const body = await fsp.readFile(filePath);
     res.writeHead(200, {
       'Content-Type': contentTypeFor(filePath),
+      'Content-Length': body.length,
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
     });

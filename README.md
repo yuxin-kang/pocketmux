@@ -1,85 +1,143 @@
-# Pocketmux
+<div align="center">
+  <img src="public/assets/pocketmux-icon-192.png" width="120" height="120" alt="Pocketmux logo">
+  <h1>Pocketmux</h1>
+  <p><strong>A lightweight, mobile-first remote control surface for tmux.</strong></p>
+  <p>Monitor long-running terminal work, interact with terminal-based agents, and manage tmux windows from a phone or desktop browser.</p>
+</div>
 
-Pocketmux is a lightweight, self-hosted web console for securely monitoring and controlling remote tmux sessions—including Codex workflows—from any modern browser.
+## Overview
 
-## Features
+Pocketmux connects a small, self-hosted web interface to the tmux server already running on your computer. It captures recent pane output, sends text and approved control keys through tmux, and keeps the original terminal session as the source of truth.
 
-- Browse tmux sessions, windows, and panes from a mobile-friendly interface.
-- Create a named zsh window at the end of the selected tmux session.
-- Delete live single-pane tmux windows with confirmation.
-- Identify Codex panes from their command or pane title.
-- View recent pane output and send text or common control keys.
-- Show zsh autosuggestions in two steps: preview a partial command, then accept the visible suggestion with `Right`.
-- Attach images and common files (PDF, text, Word, and Excel) with a custom prompt for Codex analysis.
-- Refresh pane output and session metadata automatically.
-- Protect API access with a bearer token.
-- Restrict backend operations to discovered tmux panes and a fixed control-key allowlist.
+Pocketmux is agent-agnostic. It works at the tmux pane boundary and requires no agent-specific SDK, plugin, or protocol, so it can control shells, development tools, and any interactive agent that runs inside tmux.
+
+Unlike a general-purpose browser terminal, Pocketmux is designed for quickly checking and continuing existing terminal workflows while away from the keyboard.
+
+## Highlights
+
+- Switch between tmux sessions, windows, and panes from a responsive interface.
+- Follow live terminal output automatically, with manual scrollback when needed.
+- Continue terminal-based agent sessions with text, images, PDFs, documents, spreadsheets, and other common files.
+- Send multiple mixed attachments with one prompt while preserving their original filenames.
+- Create named zsh windows in `~`, rename panes, and delete standalone tmux windows.
+- Preview and accept zsh autosuggestions only when the selected pane is an interactive zsh shell.
+- Use common terminal controls such as `Ctrl-C`, `Esc`, arrow keys, and `Enter`.
+- Protect every API request with a bearer token.
+- Run with Node.js built-in modules only—there are no runtime package dependencies.
 
 ## Requirements
 
 - Node.js 20 or later
 - tmux 3.x
-- A Linux user that owns the tmux server
+- Linux or another environment supported by both Node.js and tmux
 
-Pocketmux uses Node.js built-in modules and has no runtime dependencies. `npm install` is not required.
+Pocketmux must run as the same operating-system user—and with the same `TMUX_TMPDIR`, when configured—as the tmux server it controls.
 
-## Quick start
-
-Start Pocketmux as the same system user and with the same `TMUX_TMPDIR` as the tmux server:
+## Quick Start
 
 ```bash
+git clone https://github.com/yuxin-kang/pocketmux.git
+cd pocketmux
 npm start
 ```
 
-The service prints an access token and a local URL. Open the URL in a browser, or use:
+No `npm install` step is required. Pocketmux starts on port `3789`, generates an access token, and prints browser-ready URLs:
 
 ```text
-http://<host>:3789/?token=<access-token>
+pocketmux listening on 0.0.0.0:3789
+Access token: <generated-token>
+Open on your phone:
+  http://<local-address>:3789/?token=<generated-token>
 ```
 
-## Attachment analysis
+Open one of the printed URLs on your phone or desktop. The token is removed from the address bar after the page loads and retained by that browser for later visits.
 
-Use the `附件` button in the composer to select an image or common file, add an optional prompt, and send both to the selected Codex pane. Pocketmux stores the attachment locally on the host, then sends its local path followed by the prompt. Images are limited to 10 MB; other supported attachments are limited to 25 MB. Uploaded attachments are removed when the service stops or after 24 hours.
+## Remote Access
 
-## Window creation and zsh completion
-
-Use `＋ 新建 zsh` in the workspace section to add a standalone zsh window after the selected session's last window. It does not split the current pane and always starts in the current user's home directory (`~`). You can assign the new window an application-owned name. Select any live single-pane window and use `删除窗口` to remove it after confirmation; this includes existing windows and windows not created by Pocketmux. Windows containing multiple panes are protected from deletion. When the selected pane is an active, non-Codex `zsh` shell, `显示补全` becomes available for single-line partial commands; it types the fragment literally so zsh-autosuggestions can render the candidate in the terminal. After checking the visible candidate, click `接受 →` and then `执行 Enter` to run it. The normal `Enter` shortcut and the main send button also execute an already accepted zsh suggestion. Codex panes do not expose this action.
-
-To configure the bind address, port, or token explicitly:
+For normal remote access, place Pocketmux behind an encrypted private connection such as Tailscale or an SSH tunnel. To bind only to the local machine:
 
 ```bash
-HOST=0.0.0.0 \
+HOST=127.0.0.1 PORT=3789 npm start
+```
+
+For temporary testing, a [Cloudflare Quick Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) can forward the local service:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:3789
+```
+
+Treat both the public tunnel URL and the Pocketmux access token as sensitive. Quick Tunnels are intended for testing and do not provide an uptime guarantee.
+
+## Using Pocketmux
+
+### Sessions and panes
+
+Pocketmux discovers live tmux sessions and panes automatically. Select a session and pane to view its recent output. Switching panes moves the view to the latest output; scroll upward whenever you need older terminal history.
+
+### Window management
+
+- Create a named standalone zsh window at the end of the selected tmux session.
+- Rename any pane. For single-pane windows, the tmux window name is updated as well.
+- Delete any live single-pane window after confirmation. Multi-pane windows are protected from deletion.
+
+New zsh windows start in the current user's home directory. On eligible zsh panes, Pocketmux can preview the shell's visible autosuggestion, accept it with the right-arrow action, and execute it with `Enter`.
+
+### Attachments for terminal agents
+
+Select up to 10 attachments, add an optional prompt, and send them together to the current pane. Pocketmux stores each file temporarily on the host and adds its local path and original filename to the message. File analysis works with any receiving agent or tool that can read local paths on the Pocketmux host.
+
+Supported formats include:
+
+- Images: PNG, JPEG, GIF, and WebP
+- Documents: PDF, DOC, DOCX, RTF, PPT, and PPTX
+- Spreadsheets: XLS, XLSX, and CSV
+- Text and data: TXT, Markdown, JSON, XML, YAML, and log files
+
+| Limit | Value |
+| --- | ---: |
+| Attachments per message | 10 |
+| Maximum image size | 10 MB |
+| Maximum non-image file size | 25 MB |
+| Maximum combined size per message | 50 MB |
+| Temporary file lifetime | 24 hours |
+
+Uploads are also removed when the Pocketmux process stops.
+
+## Configuration
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `HOST` | `0.0.0.0` | Network interface on which the HTTP server listens |
+| `PORT` | `3789` | HTTP server port |
+| `REMOTE_TOOL_TOKEN` | Random token at startup | Persistent bearer token used to authorize browser requests |
+
+Example:
+
+```bash
+HOST=127.0.0.1 \
 PORT=3789 \
 REMOTE_TOOL_TOKEN='replace-with-a-long-random-token' \
 npm start
 ```
 
-## Remote access
-
-For access outside the local network, use Tailscale or an SSH tunnel. Keep Pocketmux on a trusted network and do not expose port `3789` directly to the public internet. The service currently uses HTTP rather than HTTPS, so encrypted transport must be provided by the surrounding network or proxy.
-
-For temporary testing only, a [Cloudflare Quick Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) can forward a localhost-bound instance. Treat the generated public URL and access token as sensitive.
-
-## Security model
+## Security Model
 
 - Every `/api/*` route requires `Authorization: Bearer <token>`.
-- The browser cannot submit arbitrary shell commands.
-- The backend accepts only discovered tmux pane IDs and fixed control keys.
-- Normal text is passed to tmux through its buffer rather than shell interpolation. Validated zsh completion fragments use tmux's literal keystroke mode so zsh-autosuggestions can react.
-- Attachment uploads require the same bearer token, accept only supported image, document, and text formats, and are never served as public static files.
-- Captured output is kept in memory and is not persisted by Pocketmux.
+- Backend operations are limited to discovered tmux targets and an explicit control-key allowlist.
+- Text is transferred through a temporary tmux buffer rather than interpolated into a server-side shell command.
+- The server does not expose a general process-spawning or shell-execution HTTP endpoint. Text sent to an interactive shell can still execute with the Pocketmux user's privileges.
+- Attachments require authentication, are stored with owner-only permissions, and are never exposed as public static files.
+- Terminal output is read from tmux on demand and is not persisted by Pocketmux.
 
-The access token is a bearer credential. Do not share URLs that contain `?token=...`.
+Pocketmux serves plain HTTP by default and is designed for a trusted single-user environment. Do not expose port `3789` directly to the public internet; provide HTTPS or private-network encryption through the surrounding proxy or tunnel.
 
-## Troubleshooting
+## How It Works
 
-If no sessions are shown, verify that Pocketmux runs as the same Linux user as tmux and that both use the same `TMUX_TMPDIR`:
-
-```bash
-tmux list-sessions
+```text
+Browser  →  Pocketmux HTTP API  →  tmux  →  shells, tools, and terminal agents
 ```
 
-Pocketmux preserves tmux window names and pane titles. It does not parse Codex's internal message format, which keeps it compatible with different Codex versions.
+The browser refreshes session metadata and captures recent output from the selected pane. Pocketmux deliberately uses polling and tmux's native commands instead of emulating a complete terminal or parsing any agent's internal message format.
 
 ## Development
 
@@ -88,4 +146,4 @@ npm test
 npm run dev
 ```
 
-Product and interaction constraints are documented in [`DESIGN.md`](./DESIGN.md).
+The test suite uses Node.js's built-in test runner. Product behavior, interaction rules, and visual constraints are documented in [`DESIGN.md`](./DESIGN.md).

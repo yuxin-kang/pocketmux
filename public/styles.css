@@ -76,14 +76,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, pre:focus-vis
   display: grid;
   width: 40px;
   height: 40px;
+  flex: 0 0 auto;
   place-items: center;
+  overflow: hidden;
   border: 1px solid rgba(240, 130, 105, 0.5);
   border-radius: 12px;
   background: var(--accent-soft);
-  color: var(--accent-strong);
-  font-size: 24px;
-  line-height: 1;
 }
+.brand-mark img { display: block; width: 165%; height: 165%; max-width: none; object-fit: contain; }
 
 h1, h2, h3, p { margin: 0; }
 h1 { font-size: 28px; letter-spacing: -0.04em; }
@@ -135,7 +135,7 @@ h1 { font-size: 28px; letter-spacing: -0.04em; }
 }
 .mobile-switcher { display: none; }
 .brand-lockup.compact { gap: 10px; }
-.compact .brand-mark { width: 30px; height: 30px; border-radius: 9px; font-size: 18px; }
+.compact .brand-mark { width: 30px; height: 30px; border-radius: 9px; }
 .product-name { font-size: 14px; font-weight: 750; letter-spacing: -0.02em; }
 .product-subtitle { margin-top: 2px; color: var(--faint); font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; }
 .topbar-actions { display: flex; align-items: center; gap: 12px; }

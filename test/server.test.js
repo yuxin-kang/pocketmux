@@ -50,10 +50,11 @@ async function listen(server) {
 }
 
 test('mobile composer keeps long input visible above the soft keyboard', async () => {
-  const [app, styles, html] = await Promise.all([
+  const [app, styles, html, manifest] = await Promise.all([
     fsp.readFile(path.join(__dirname, '..', 'public', 'app.js'), 'utf8'),
     fsp.readFile(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8'),
     fsp.readFile(path.join(__dirname, '..', 'public', 'index.html'), 'utf8'),
+    fsp.readFile(path.join(__dirname, '..', 'public', 'manifest.webmanifest'), 'utf8'),
   ]);
 
   assert.match(app, /window\.visualViewport\?\.addEventListener\('resize', scheduleMessageInputVisibility\)/);
@@ -63,6 +64,13 @@ test('mobile composer keeps long input visible above the soft keyboard', async (
   assert.match(styles, /\.composer-form textarea \{[^}]*overflow-y: auto;/);
   assert.match(html, /app-helpers\.js\?v=20260809-review-fixes/);
   assert.match(html, /app\.js\?v=20260809-review-fixes/);
+  assert.equal((html.match(/\/favicon\.ico\?v=20260809-pocketmux-bmp/g) || []).length, 2);
+  assert.match(html, /sizes="16x16 32x32 48x48"/);
+  assert.equal((html.match(/\/assets\/pocketmux-icon-192\.png\?v=20260809-pocketmux/g) || []).length, 1);
+  assert.equal((html.match(/\/assets\/pocketmux-icon\.png/g) || []).length, 2);
+  assert.match(styles, /\.brand-mark img \{/);
+  assert.match(manifest, /"src": "\/assets\/pocketmux-icon-192\.png"/);
+  assert.match(manifest, /"src": "\/assets\/pocketmux-icon-512\.png"/);
 });
 
 test('serves the browser helper loaded by the main app', async (t) => {
@@ -75,6 +83,20 @@ test('serves the browser helper loaded by the main app', async (t) => {
   assert.equal(helper.status, 200);
   assert.match(helper.headers.get('content-type'), /^text\/javascript/);
   assert.match(await helper.text(), /PocketmuxAppHelpers/);
+
+  const icon = await fetch(`${base}/assets/pocketmux-icon.png`);
+  assert.equal(icon.status, 200);
+  assert.equal(icon.headers.get('content-type'), 'image/png');
+  assert.ok((await icon.arrayBuffer()).byteLength > 1000);
+
+  const favicon = await fetch(`${base}/favicon.ico`);
+  assert.equal(favicon.status, 200);
+  assert.equal(favicon.headers.get('content-type'), 'image/x-icon');
+  const faviconBytes = Buffer.from(await favicon.arrayBuffer());
+  assert.equal(Number(favicon.headers.get('content-length')), faviconBytes.byteLength);
+  assert.ok(faviconBytes.byteLength > 1000);
+  assert.deepEqual([...faviconBytes.subarray(0, 4)], [0, 0, 1, 0]);
+
 });
 
 test('parses tmux pane rows and identifies Codex panes', () => {

@@ -38,7 +38,7 @@
 - Spacing/layout rhythm: 8px 基础间距；桌面双栏，手机改为上下分区和横向滚动 pane 条。
 - Shape/radius/elevation: 12px 卡片圆角，细边框，低对比阴影；终端区域保持近方形和高对比。
 - Motion: 仅使用短促的连接/刷新过渡；支持 `prefers-reduced-motion`。
-- Imagery/iconography: 使用 CSS/文本图标，不引入图片资源或图标依赖。
+- Imagery/iconography: 品牌入口使用项目自有的极简 Pocket + tmux 分屏图标；其余操作图标继续使用 CSS/文本符号，不引入图标依赖。
 
 ## Components
 - Existing components to reuse: 无。
