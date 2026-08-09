@@ -42,13 +42,14 @@
 
 ## Components
 - Existing components to reuse: 无。
-- New/changed components: AuthGate、SessionRail、PaneStrip、MobileQuickSwitcher（深色底部选择面板）、TerminalViewport、Composer、ConnectionBadge、Toast。
-- Variants and states: loading、selected、busy/标题 spinner、dead pane、empty、unauthorized、offline。
+- New/changed components: AuthGate、SessionRail、PaneStrip、PaneRenamer（任意 pane 独立显示名，单-pane window 同步 tmux 窗口名）、MobileQuickSwitcher（深色底部选择面板）、TerminalViewport、Composer（最多 10 个混合附件的可移除队列）、ConnectionBadge、Toast。
+- Variants and states: loading、selected、busy/标题 spinner、dead pane、empty、unauthorized、offline、附件待发送/上传中/部分无效。
 - Token/component ownership: `public/styles.css` 统一 CSS 变量；`public/app.js` 仅负责状态和 DOM 更新。
 
 ## Accessibility
 - Target standard: WCAG 2.1 AA 的实用子集。
-- Keyboard/focus behavior: 令牌输入和消息输入可回车提交；按钮有可见 focus；MobileQuickSwitcher 支持方向键、Home/End、Escape 和选中项初始焦点；终端输出使用 `aria-live="polite"`，避免每次刷新抢焦点。
+- Keyboard/focus behavior: 令牌输入和消息输入可回车提交；移动端消息框随长文本增高或软键盘可视区变化时保持光标可见，输入聚焦期间终端轮询不抢夺页面滚动；按钮有可见 focus；MobileQuickSwitcher 支持方向键、Home/End、Escape 和选中项初始焦点；终端输出使用 `aria-live="polite"`，避免每次刷新抢焦点。
+- Interaction consistency: 重命名对话框绑定打开时的 Pane；附件允许同名同大小的不同文件共存，批量上传部分失败时复用已成功上传的附件，避免重复上传。
 - Contrast/readability: 输出与背景保持高对比；状态不能只依赖颜色。
 - Screen-reader semantics: 使用 `nav`、`main`、`section`、button 和明确 label。
 - Reduced motion and sensory considerations: 尊重 `prefers-reduced-motion`，不使用持续闪烁。

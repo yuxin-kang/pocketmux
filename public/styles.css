@@ -16,6 +16,7 @@
   --warning: #e8c37c;
   --danger: #f17878;
   --radius: 12px;
+  --keyboard-inset: 0px;
   --mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
   --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -245,7 +246,8 @@ h1 { font-size: 28px; letter-spacing: -0.04em; }
 .shortcut-button { min-height: 29px; padding: 4px 9px; border-radius: 6px; color: var(--muted); font-family: var(--mono); font-size: 10px; white-space: nowrap; }
 .shortcut-button.danger { color: var(--danger); }
 .shortcut-button:disabled { cursor: wait; opacity: 0.5; }
-.attachment-preview { display: flex; align-items: center; gap: 9px; max-width: min(100%, 360px); margin: 0 0 9px; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--bg); }
+.attachment-list { display: grid; max-height: 156px; gap: 6px; margin: 0 0 9px; overflow-y: auto; overscroll-behavior: contain; }
+.attachment-preview { display: flex; width: min(100%, 420px); align-items: center; gap: 9px; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--bg); }
 .attachment-visual { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; }
 .attachment-thumbnail { width: 38px; height: 38px; flex: 0 0 auto; border-radius: 6px; object-fit: cover; background: var(--surface-soft); }
 .attachment-file-icon { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-soft); color: var(--accent-strong); font-family: var(--mono); font-size: 8px; font-weight: 700; }
@@ -253,10 +255,13 @@ h1 { font-size: 28px; letter-spacing: -0.04em; }
 .attachment-details strong { overflow: hidden; color: var(--text); font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .remove-attachment { width: 27px; height: 27px; flex: 0 0 auto; margin-left: auto; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; }
 .remove-attachment:hover { border-color: var(--line-strong); color: var(--text); background: var(--surface-soft); }
+.remove-attachment:disabled { cursor: wait; opacity: 0.45; }
 .composer-form { display: flex; align-items: end; gap: 9px; }
-.attach-button { display: grid; width: 42px; height: 42px; flex: 0 0 auto; place-items: center; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--bg); color: var(--muted); cursor: pointer; font-family: var(--mono); font-size: 10px; }
+.attach-button { position: relative; display: grid; width: 42px; height: 42px; flex: 0 0 auto; place-items: center; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--bg); color: var(--muted); cursor: pointer; font-family: var(--mono); font-size: 10px; }
 .attach-button:hover { border-color: var(--accent); color: var(--text); }
-.composer-form textarea { min-height: 42px; max-height: 140px; flex: 1; resize: none; padding: 11px 12px; border: 1px solid var(--line-strong); border-radius: 9px; outline: none; background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 12px; line-height: 1.45; }
+.attach-button.is-disabled { cursor: wait; opacity: 0.5; }
+.attachment-count { position: absolute; top: -6px; right: -6px; display: grid; min-width: 18px; height: 18px; padding: 0 4px; place-items: center; border: 2px solid var(--surface); border-radius: 999px; background: var(--accent); color: #231614; font-size: 9px; font-weight: 800; }
+.composer-form textarea { min-height: 42px; max-height: 140px; flex: 1; overflow-y: auto; overscroll-behavior: contain; resize: none; padding: 11px 12px; border: 1px solid var(--line-strong); border-radius: 9px; outline: none; background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 12px; line-height: 1.45; }
 .composer-form textarea:focus { border-color: var(--accent); }
 .send-button { width: 42px; height: 42px; flex: 0 0 auto; font-size: 20px; }
 .send-button:disabled { cursor: wait; opacity: 0.5; }
@@ -266,6 +271,7 @@ h1 { font-size: 28px; letter-spacing: -0.04em; }
 .toast[data-kind="success"] { border-color: rgba(120, 201, 165, 0.4); color: #a7e0c4; }
 
 @media (max-width: 780px) {
+  body.message-input-active .app-shell { padding-bottom: var(--keyboard-inset); }
   .topbar { height: 62px; padding: 0 15px; }
   .product-subtitle, .ghost-button { display: none; }
   .connection-status { font-size: 10px; }
@@ -309,9 +315,10 @@ h1 { font-size: 28px; letter-spacing: -0.04em; }
   .terminal-card { min-height: 53dvh; margin-top: 12px; }
   .terminal-output { padding: 14px; font-size: 11px; }
   .terminal-heading { min-height: 54px; padding: 10px 13px; }
-  .composer-area { padding: 9px 10px 10px; }
+  .composer-area { padding: 9px 10px 10px; scroll-margin-block-end: calc(var(--keyboard-inset) + 12px); }
   .shortcut-row { margin-bottom: 8px; }
   .composer-form { gap: 7px; }
+  .composer-form textarea { scroll-margin-block-end: 12px; }
   .attach-button, .send-button { width: 40px; height: 40px; }
   .toast { right: 15px; bottom: max(15px, env(safe-area-inset-bottom)); }
 }

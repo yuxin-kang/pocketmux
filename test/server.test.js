@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const os = require('node:os');
+const path = require('node:path');
 const fsp = require('node:fs/promises');
 
 const {
@@ -12,6 +13,7 @@ const {
   isAllowedKey,
   PANE_FORMAT,
   parsePaneRows,
+  renamePane,
 } = require('../server');
 
 const delimiter = '\t';
@@ -46,6 +48,34 @@ async function listen(server) {
   await once(server, 'listening');
   return `http://127.0.0.1:${server.address().port}`;
 }
+
+test('mobile composer keeps long input visible above the soft keyboard', async () => {
+  const [app, styles, html] = await Promise.all([
+    fsp.readFile(path.join(__dirname, '..', 'public', 'app.js'), 'utf8'),
+    fsp.readFile(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8'),
+    fsp.readFile(path.join(__dirname, '..', 'public', 'index.html'), 'utf8'),
+  ]);
+
+  assert.match(app, /window\.visualViewport\?\.addEventListener\('resize', scheduleMessageInputVisibility\)/);
+  assert.match(app, /Math\.min\(elements\.messageInput\.scrollHeight, MESSAGE_INPUT_MAX_HEIGHT\)/);
+  assert.match(app, /shouldAutoScrollTerminal\(\{/);
+  assert.match(styles, /body\.message-input-active \.app-shell \{ padding-bottom: var\(--keyboard-inset\); \}/);
+  assert.match(styles, /\.composer-form textarea \{[^}]*overflow-y: auto;/);
+  assert.match(html, /app-helpers\.js\?v=20260809-review-fixes/);
+  assert.match(html, /app\.js\?v=20260809-review-fixes/);
+});
+
+test('serves the browser helper loaded by the main app', async (t) => {
+  const { runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const helper = await fetch(`${base}/app-helpers.js`);
+  assert.equal(helper.status, 200);
+  assert.match(helper.headers.get('content-type'), /^text\/javascript/);
+  assert.match(await helper.text(), /PocketmuxAppHelpers/);
+});
 
 test('parses tmux pane rows and identifies Codex panes', () => {
   const [codex, shell] = parsePaneRows(`${paneRow()}\n${paneRow({ id: '%2', command: 'zsh', title: 'venus' })}\n`);
@@ -174,6 +204,109 @@ test('deletes any live standalone window, including existing non-Pocketmux windo
     name: 'box',
   });
   assert.deepEqual(calls.at(-1), ['kill-window', '-t', 'leo_lab:1']);
+});
+
+test('renames any standalone pane and keeps its tmux window name in sync', async (t) => {
+  const { calls, runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const response = await fetch(`${base}/api/panes/%252`, {
+    method: 'PATCH',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: ' -review-shell ' }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    paneId: '%2',
+    sessionName: 'leo_lab',
+    windowIndex: 1,
+    previousName: 'box',
+    name: '-review-shell',
+    windowRenamed: true,
+  });
+  assert.deepEqual(calls.at(-2), ['set-option', '-p', '-t', '%2', '@pocketmux_name', '-review-shell']);
+  assert.deepEqual(calls.at(-1), ['rename-window', '-t', 'leo_lab:1', '--', '-review-shell']);
+});
+
+test('escapes literal hashes for tmux window renames while preserving metadata', async (t) => {
+  const { calls, runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const response = await fetch(`${base}/api/panes/%252`, {
+    method: 'PATCH',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: '#{session_name}' }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).name, '#{session_name}');
+  assert.deepEqual(calls.at(-2), [
+    'set-option', '-p', '-t', '%2', '@pocketmux_name', '#{session_name}',
+  ]);
+  assert.deepEqual(calls.at(-1), [
+    'rename-window', '-t', 'leo_lab:1', '--', '##{session_name}',
+  ]);
+});
+
+test('surfaces both the rename and metadata rollback failures', async () => {
+  const { calls, runner: baseRunner } = fakeTmux();
+  const renameError = new Error('rename failed');
+  const rollbackError = new Error('rollback failed');
+  const runner = async (args) => {
+    if (args[0] === 'rename-window') throw renameError;
+    if (args[0] === 'set-option' && args.includes('-u')) throw rollbackError;
+    return baseRunner(args);
+  };
+
+  await assert.rejects(
+    renamePane(runner, '%2', 'new-name'),
+    (error) => {
+      assert.equal(error.code, 'TMUX_RENAME_ROLLBACK_FAILED');
+      assert.equal(error.renameError, renameError);
+      assert.equal(error.rollbackError, rollbackError);
+      assert.deepEqual(error.errors, [renameError, rollbackError]);
+      return true;
+    },
+  );
+  assert.deepEqual(calls.at(-1), ['set-option', '-p', '-t', '%2', '@pocketmux_name', 'new-name']);
+});
+
+test('renames one pane in a split window without changing sibling window names', async (t) => {
+  const { calls, runner } = fakeTmux({
+    otherPanes: [{ id: '%2', window: '0', windowName: 'split', index: '1', command: 'zsh', title: 'zsh' }],
+  });
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const response = await fetch(`${base}/api/windows/%251`, {
+    method: 'PATCH',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'main-pane' }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).windowRenamed, false);
+  assert.deepEqual(calls.at(-1), ['set-option', '-p', '-t', '%1', '@pocketmux_name', 'main-pane']);
+  assert.equal(calls.some((args) => args[0] === 'rename-window'), false);
+});
+
+test('rejects an invalid pane name before changing tmux state', async (t) => {
+  const { calls, runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const response = await fetch(`${base}/api/panes/%251`, {
+    method: 'PATCH',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: '   ' }),
+  });
+  assert.equal(response.status, 400);
+  assert.equal(calls.length, 0);
 });
 
 test('deletes an existing zsh window without Pocketmux metadata', async (t) => {
@@ -339,7 +472,10 @@ test('uploads a supported image and sends it with the prompt', async (t) => {
     }),
   });
   assert.equal(input.status, 200);
-  assert.match(loadedBuffers.at(-1), /^Image path: .*pocketmux-uploads.*\.png\n请分析这张截图$/);
+  assert.match(
+    loadedBuffers.at(-1),
+    /^Image path: .*pocketmux-uploads.*\.png \(original filename: attachment\)\n请分析这张截图$/,
+  );
   const mutationCalls = calls.filter((args) => ['load-buffer', 'paste-buffer', 'send-keys'].includes(args[0]));
   assert.deepEqual(mutationCalls.map((args) => args[0]), ['load-buffer', 'paste-buffer', 'send-keys']);
   assert.equal(mutationCalls.at(-1).at(-1), 'Enter');
@@ -423,7 +559,104 @@ test('sends a document path followed by its prompt to the current pane', async (
     }),
   });
   assert.equal(input.status, 200);
-  assert.match(loadedBuffers.at(-1), /^File path: .*pocketmux-uploads.*\.txt\n请总结这个文件$/);
+  assert.match(
+    loadedBuffers.at(-1),
+    /^File path: .*pocketmux-uploads.*\.txt \(original filename: notes\.txt\)\n请总结这个文件$/,
+  );
+});
+
+test('sends multiple mixed attachments with one prompt in selection order', async (t) => {
+  const { loadedBuffers, runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const image = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'base64',
+  );
+  const uploads = [];
+  for (const file of [
+    { name: 'screen.png', contentType: 'image/png', body: image },
+    { name: 'notes.txt', contentType: 'text/plain', body: Buffer.from('notes for codex') },
+  ]) {
+    const response = await fetch(`${base}/api/uploads`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-token',
+        'Content-Type': file.contentType,
+        'X-File-Name': encodeURIComponent(file.name),
+      },
+      body: file.body,
+    });
+    assert.equal(response.status, 201);
+    uploads.push(await response.json());
+  }
+
+  const input = await fetch(`${base}/api/panes/%251/input`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text: '结合图片和文档一起分析',
+      attachmentIds: uploads.map((upload) => upload.attachmentId),
+      submit: true,
+    }),
+  });
+  assert.equal(input.status, 200);
+  assert.match(
+    loadedBuffers.at(-1),
+    /^Image path: .*pocketmux-uploads.*\.png \(original filename: screen\.png\)\nFile path: .*pocketmux-uploads.*\.txt \(original filename: notes\.txt\)\n结合图片和文档一起分析$/,
+  );
+});
+
+test('sanitizes attachment filenames before adding them to prompt lines', async (t) => {
+  const { loadedBuffers, runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const upload = await fetch(`${base}/api/uploads`, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer test-token',
+      'Content-Type': 'text/plain',
+      'X-File-Name': encodeURIComponent('folder/notes\n\t.txt'),
+    },
+    body: Buffer.from('notes for codex'),
+  });
+  assert.equal(upload.status, 201);
+  const payload = await upload.json();
+  assert.equal(payload.name, 'notes.txt');
+
+  const input = await fetch(`${base}/api/panes/%251/input`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'read it', attachmentId: payload.attachmentId }),
+  });
+  assert.equal(input.status, 200);
+  assert.match(
+    loadedBuffers.at(-1),
+    /^File path: .*pocketmux-uploads.*\.txt \(original filename: notes\.txt\)\nread it$/,
+  );
+});
+
+test('rejects messages with too many attachments before touching tmux', async (t) => {
+  const { calls, runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const response = await fetch(`${base}/api/panes/%251/input`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text: 'too many',
+      attachmentIds: Array.from({ length: 11 }, (_, index) => index.toString(16).padStart(32, '0')),
+      submit: true,
+    }),
+  });
+  assert.equal(response.status, 413);
+  assert.equal(calls.length, 0);
 });
 
 test('rejects invalid image uploads before touching tmux', async (t) => {

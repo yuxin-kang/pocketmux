@@ -18,6 +18,8 @@ const DELIMITER = '\t';
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+const MAX_COMBINED_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const ATTACHMENT_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_INPUT_CHARS = 8000;
 const MAX_COMPOSED_INPUT_CHARS = 12000;
@@ -467,6 +469,56 @@ async function createZshWindow(tmuxRunner, paneId, name) {
   };
 }
 
+async function renamePane(tmuxRunner, paneId, name) {
+  const pane = await findPane(tmuxRunner, paneId);
+  const windowPanes = parsePaneRows(await tmuxRunner(['list-panes', '-a', '-F', PANE_FORMAT]))
+    .filter((candidate) => (
+      candidate.sessionName === pane.sessionName
+      && candidate.windowIndex === pane.windowIndex
+    ));
+
+  await tmuxRunner(['set-option', '-p', '-t', pane.id, '@pocketmux_name', name]);
+  const windowRenamed = windowPanes.length === 1;
+  if (windowRenamed) {
+    try {
+      await tmuxRunner([
+        'rename-window',
+        '-t',
+        `${pane.sessionName}:${pane.windowIndex}`,
+        '--',
+        name.replaceAll('#', '##'),
+      ]);
+    } catch (error) {
+      const rollbackArgs = pane.pocketmuxName
+        ? ['set-option', '-p', '-t', pane.id, '@pocketmux_name', pane.pocketmuxName]
+        : ['set-option', '-p', '-u', '-t', pane.id, '@pocketmux_name'];
+      try {
+        await tmuxRunner(rollbackArgs);
+      } catch (rollbackError) {
+        const consistencyError = new AggregateError(
+          [error, rollbackError],
+          'tmux window rename failed and Pocketmux metadata rollback also failed',
+          { cause: error },
+        );
+        consistencyError.code = 'TMUX_RENAME_ROLLBACK_FAILED';
+        consistencyError.renameError = error;
+        consistencyError.rollbackError = rollbackError;
+        throw consistencyError;
+      }
+      throw error;
+    }
+  }
+
+  return {
+    paneId: pane.id,
+    sessionName: pane.sessionName,
+    windowIndex: pane.windowIndex,
+    previousName: pane.pocketmuxName || pane.windowName || `window-${pane.windowIndex}`,
+    name,
+    windowRenamed,
+  };
+}
+
 async function deleteWindow(tmuxRunner, paneId) {
   const pane = await findPane(tmuxRunner, paneId);
   if (pane.dead) {
@@ -685,15 +737,32 @@ async function saveAttachment(req) {
   };
 }
 
-function buildImagePrompt(userText, attachmentPath) {
+function sanitizeAttachmentName(name) {
+  const safeName = path.basename(String(name || '').replaceAll('\\', '/'))
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim()
+    .slice(0, 180);
+  return safeName || 'attachment';
+}
+
+function buildImagePrompt(userText, attachmentPath, attachmentName = 'attachment') {
   const prompt = typeof userText === 'string' ? userText : '';
-  return `Image path: ${attachmentPath}\n${prompt}`;
+  return `Image path: ${attachmentPath} (original filename: ${sanitizeAttachmentName(attachmentName)})\n${prompt}`;
 }
 
 function buildAttachmentPrompt(userText, attachment) {
-  if (attachment.kind === 'image') return buildImagePrompt(userText, attachment.path);
+  if (attachment.kind === 'image') return buildImagePrompt(userText, attachment.path, attachment.name);
   const prompt = typeof userText === 'string' ? userText : '';
-  return `File path: ${attachment.path}\n${prompt}`;
+  return `File path: ${attachment.path} (original filename: ${sanitizeAttachmentName(attachment.name)})\n${prompt}`;
+}
+
+function buildAttachmentsPrompt(userText, attachments) {
+  const prompt = typeof userText === 'string' ? userText : '';
+  const paths = attachments.map((attachment) => (
+    `${attachment.kind === 'image' ? 'Image' : 'File'} path: ${attachment.path} (original filename: ${sanitizeAttachmentName(attachment.name)})`
+  ));
+  if (prompt) paths.push(prompt);
+  return paths.join('\n');
 }
 
 function sendJson(res, statusCode, payload) {
@@ -734,6 +803,7 @@ async function serveStatic(res, pathname) {
   const files = {
     '/': 'index.html',
     '/index.html': 'index.html',
+    '/app-helpers.js': 'app-helpers.js',
     '/app.js': 'app.js',
     '/styles.css': 'styles.css',
     '/manifest.webmanifest': 'manifest.webmanifest',
@@ -808,7 +878,7 @@ function createRemoteToolServer({
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
         'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-File-Name',
-        'Access-Control-Allow-Methods': 'DELETE, GET, POST, OPTIONS',
+        'Access-Control-Allow-Methods': 'DELETE, GET, PATCH, POST, OPTIONS',
       });
       res.end();
       return;
@@ -877,6 +947,18 @@ function createRemoteToolServer({
         return;
       }
 
+      if (req.method === 'PATCH' && parts.length === 3 && ['windows', 'panes'].includes(parts[1])) {
+        const paneId = parts[2];
+        if (!isValidPaneId(paneId)) {
+          throw new ApiError(400, 'Invalid pane id', '无效的 pane 标识。');
+        }
+        const body = await readJsonBody(req);
+        const name = normalizeWindowName(body.name);
+        const renamed = await queuePaneMutation(paneId, () => renamePane(tmuxRunner, paneId, name));
+        sendJson(res, 200, { ok: true, ...renamed });
+        return;
+      }
+
       if (parts.length >= 4 && parts[1] === 'panes') {
         const paneId = parts[2];
         const action = parts[3];
@@ -913,18 +995,35 @@ function createRemoteToolServer({
           if (text.length > MAX_INPUT_CHARS) {
             throw new ApiError(413, 'Input is too long', '单次输入不能超过 8000 个字符。');
           }
-          let attachment = null;
-          if (body.attachmentId !== undefined && body.attachmentId !== null && body.attachmentId !== '') {
-            if (typeof body.attachmentId !== 'string' || !ATTACHMENT_ID_PATTERN.test(body.attachmentId)) {
-              throw new ApiError(400, 'Invalid attachment id', '附件标识无效。');
-            }
-            await pruneAttachments();
-            attachment = attachments.get(body.attachmentId) || null;
-            if (!attachment) {
-              throw new ApiError(404, 'Attachment not found', '附件已过期，请重新选择后再发送。');
-            }
+          const legacyAttachmentId = body.attachmentId;
+          const requestedAttachmentIds = body.attachmentIds === undefined
+            ? (legacyAttachmentId === undefined || legacyAttachmentId === null || legacyAttachmentId === ''
+              ? []
+              : [legacyAttachmentId])
+            : body.attachmentIds;
+          if (!Array.isArray(requestedAttachmentIds)) {
+            throw new ApiError(400, 'Invalid attachment ids', '附件标识列表无效。');
           }
-          const message = attachment ? buildAttachmentPrompt(text, attachment) : text;
+          if (requestedAttachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+            throw new ApiError(413, 'Too many attachments', `每条消息最多发送 ${MAX_ATTACHMENTS_PER_MESSAGE} 个附件。`);
+          }
+          if (requestedAttachmentIds.some((id) => typeof id !== 'string' || !ATTACHMENT_ID_PATTERN.test(id))) {
+            throw new ApiError(400, 'Invalid attachment id', '附件标识无效。');
+          }
+
+          await pruneAttachments();
+          const messageAttachments = requestedAttachmentIds.map((id) => attachments.get(id) || null);
+          if (messageAttachments.some((attachment) => !attachment)) {
+            throw new ApiError(404, 'Attachment not found', '部分附件已过期，请重新选择后再发送。');
+          }
+          const combinedAttachmentBytes = messageAttachments.reduce((total, attachment) => total + attachment.size, 0);
+          if (combinedAttachmentBytes > MAX_COMBINED_ATTACHMENT_BYTES) {
+            throw new ApiError(413, 'Attachments too large', '每条消息的附件总大小不能超过 50 MB。');
+          }
+
+          const message = messageAttachments.length > 0
+            ? buildAttachmentsPrompt(text, messageAttachments)
+            : text;
           if (message.length > MAX_COMPOSED_INPUT_CHARS) {
             throw new ApiError(413, 'Composed input is too long', '附件提示词不能超过 8000 个字符。');
           }
@@ -1016,10 +1115,13 @@ if (require.main === module) start();
 module.exports = {
   ALLOWED_KEYS,
   MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_COMBINED_ATTACHMENT_BYTES,
   MAX_IMAGE_BYTES,
   PANE_FORMAT,
   SESSION_FORMAT,
   buildAttachmentPrompt,
+  buildAttachmentsPrompt,
   buildImagePrompt,
   buildSessionTree,
   createRemoteToolServer,
@@ -1029,5 +1131,6 @@ module.exports = {
   isCodexPane,
   parsePaneRows,
   parseSessionRows,
+  renamePane,
   runTmux,
 };

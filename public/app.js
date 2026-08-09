@@ -1,6 +1,12 @@
 'use strict';
 
 (() => {
+  const {
+    createAttachmentSelection,
+    findPaneById,
+    resolveAttachmentUploads,
+    shouldAutoScrollTerminal,
+  } = window.PocketmuxAppHelpers;
   const state = {
     token: localStorage.getItem('tmux-relay-token') || '',
     sessions: [],
@@ -14,15 +20,20 @@
     refreshPromise: null,
     sending: false,
     creatingWindow: false,
+    renamingWindow: false,
+    renameTargetPaneId: '',
     deletingWindow: false,
     zshSuggestion: null,
-    selectedAttachmentFile: null,
-    selectedAttachmentUrl: '',
+    selectedAttachments: [],
   };
 
   const TERMINAL_BOTTOM_THRESHOLD = 24;
+  const MESSAGE_INPUT_MAX_HEIGHT = 140;
+  const MESSAGE_INPUT_VIEWPORT_MARGIN = 12;
   const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
   const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+  const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+  const MAX_COMBINED_ATTACHMENT_BYTES = 50 * 1024 * 1024;
   const IMAGE_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
   const ATTACHMENT_CONTENT_TYPES = new Set([
     ...IMAGE_CONTENT_TYPES,
@@ -62,24 +73,28 @@
     paneList: document.querySelector('#pane-list'),
     paneCount: document.querySelector('#pane-count'),
     newWindowButton: document.querySelector('#new-window-button, #new-pane-button'),
+    renameWindowButton: document.querySelector('#rename-window-button'),
     deleteWindowButton: document.querySelector('#delete-window-button'),
     newWindowDialog: document.querySelector('#new-window-dialog, #new-pane-dialog'),
     newWindowForm: document.querySelector('#new-window-form, #new-pane-form'),
     newWindowName: document.querySelector('#new-window-name, #new-pane-name'),
     cancelNewWindow: document.querySelector('#cancel-new-window, #cancel-new-pane'),
     createWindowButton: document.querySelector('#create-window-button, #create-pane-button'),
+    renameWindowDialog: document.querySelector('#rename-window-dialog'),
+    renameWindowForm: document.querySelector('#rename-window-form'),
+    renameWindowName: document.querySelector('#rename-window-name'),
+    cancelRenameWindow: document.querySelector('#cancel-rename-window'),
+    saveWindowNameButton: document.querySelector('#save-window-name-button'),
     currentPaneMeta: document.querySelector('#current-pane-meta'),
     terminalOutput: document.querySelector('#terminal-output'),
     terminalWrap: document.querySelector('#terminal-wrap'),
     terminalEmpty: document.querySelector('#terminal-empty'),
     lastUpdated: document.querySelector('#last-updated'),
     messageInput: document.querySelector('#message-input'),
+    attachButton: document.querySelector('#attach-button'),
     attachmentInput: document.querySelector('#attachment-input'),
-    attachmentPreview: document.querySelector('#attachment-preview'),
-    attachmentThumbnail: document.querySelector('#attachment-thumbnail'),
-    attachmentFileIcon: document.querySelector('#attachment-file-icon'),
-    attachmentName: document.querySelector('#attachment-name'),
-    removeAttachment: document.querySelector('#remove-attachment'),
+    attachmentList: document.querySelector('#attachment-list'),
+    attachmentCount: document.querySelector('#attachment-count'),
     composerForm: document.querySelector('#composer-form'),
     sendButton: document.querySelector('#send-button'),
     zshCompleteButton: document.querySelector('#zsh-complete-button'),
@@ -97,9 +112,10 @@
     toast: document.querySelector('#toast'),
   };
 
-  elements.attachmentPreview.querySelectorAll('.attachment-details span').forEach((node) => node.remove());
-
   let toastTimer;
+  let nextAttachmentClientId = 1;
+  let messageInputVisibilityFrame = 0;
+  let messageInputVisibilityTimer = 0;
 
   function showToast(message, kind = 'info') {
     elements.toast.textContent = message;
@@ -129,6 +145,7 @@
   }
 
   function forgetToken() {
+    clearSelectedAttachments();
     state.token = '';
     state.sessions = [];
     state.selectedSession = '';
@@ -154,10 +171,13 @@
     if (response.status === 401) {
       const error = new Error(payload.message || '令牌无效。');
       error.unauthorized = true;
+      error.status = response.status;
       throw error;
     }
     if (!response.ok) {
-      throw new Error(payload.message || `请求失败（${response.status}）`);
+      const error = new Error(payload.message || `请求失败（${response.status}）`);
+      error.status = response.status;
+      throw error;
     }
     return payload;
   }
@@ -183,10 +203,13 @@
     if (response.status === 401) {
       const error = new Error(payload.message || '令牌无效。');
       error.unauthorized = true;
+      error.status = response.status;
       throw error;
     }
     if (!response.ok) {
-      throw new Error(payload.message || `附件上传失败（${response.status}）`);
+      const error = new Error(payload.message || `附件上传失败（${response.status}）`);
+      error.status = response.status;
+      throw error;
     }
     return payload;
   }
@@ -241,46 +264,104 @@
     );
   }
 
-  function clearSelectedAttachment() {
-    if (state.selectedAttachmentUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
-      URL.revokeObjectURL(state.selectedAttachmentUrl);
+  function revokeAttachmentUrl(attachment) {
+    if (attachment.url && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+      URL.revokeObjectURL(attachment.url);
     }
-    state.selectedAttachmentFile = null;
-    state.selectedAttachmentUrl = '';
-    elements.attachmentInput.value = '';
-    elements.attachmentThumbnail.removeAttribute('src');
-    elements.attachmentThumbnail.classList.add('is-hidden');
-    elements.attachmentFileIcon.classList.add('is-hidden');
-    elements.attachmentName.textContent = '附件';
-    elements.attachmentPreview.classList.add('is-hidden');
   }
 
-  function selectAttachment(file) {
-    if (!file) return;
-    const image = isImageAttachment(file);
-    const maxBytes = image ? MAX_IMAGE_BYTES : MAX_ATTACHMENT_BYTES;
-    if (file.size > maxBytes) {
-      elements.attachmentInput.value = '';
-      showToast(image ? '图片不能超过 10 MB。' : '附件不能超过 25 MB。', 'error');
-      return;
+  function renderSelectedAttachments() {
+    elements.attachmentList.replaceChildren();
+    for (const attachment of state.selectedAttachments) {
+      const row = makeElement('div', 'attachment-preview');
+      const visual = makeElement('div', 'attachment-visual');
+      if (attachment.url) {
+        const image = makeElement('img', 'attachment-thumbnail');
+        image.src = attachment.url;
+        image.alt = `${attachment.file.name || '图片'}预览`;
+        visual.append(image);
+      } else {
+        const icon = makeElement('span', 'attachment-file-icon', fileExtension(attachment.file).toUpperCase().slice(0, 4) || 'FILE');
+        icon.setAttribute('aria-hidden', 'true');
+        visual.append(icon);
+      }
+
+      const details = makeElement('div', 'attachment-details');
+      details.append(makeElement('strong', '', attachment.file.name || '已选择附件'));
+      const removeButton = makeElement('button', 'remove-attachment', '×');
+      removeButton.type = 'button';
+      removeButton.disabled = state.sending;
+      removeButton.setAttribute('aria-label', `移除附件 ${attachment.file.name || ''}`.trim());
+      removeButton.title = '移除附件';
+      removeButton.addEventListener('click', () => removeSelectedAttachment(attachment.clientId));
+      row.append(visual, details, removeButton);
+      elements.attachmentList.append(row);
     }
-    if (!isSupportedAttachment(file)) {
-      elements.attachmentInput.value = '';
-      showToast('支持图片、PDF、TXT/MD/CSV/JSON、Word 和 Excel 等常见文件。', 'error');
-      return;
+
+    const count = state.selectedAttachments.length;
+    elements.attachmentList.classList.toggle('is-hidden', count === 0);
+    elements.attachmentCount.textContent = String(count);
+    elements.attachmentCount.classList.toggle('is-hidden', count === 0);
+  }
+
+  function clearSelectedAttachments() {
+    state.selectedAttachments.forEach(revokeAttachmentUrl);
+    state.selectedAttachments = [];
+    elements.attachmentInput.value = '';
+    renderSelectedAttachments();
+  }
+
+  function removeSelectedAttachment(clientId) {
+    const attachment = state.selectedAttachments.find((item) => item.clientId === clientId);
+    if (!attachment) return;
+    revokeAttachmentUrl(attachment);
+    state.selectedAttachments = state.selectedAttachments.filter((item) => item.clientId !== clientId);
+    renderSelectedAttachments();
+    elements.messageInput.focus();
+  }
+
+  function selectAttachments(fileList) {
+    const files = [...(fileList || [])];
+    elements.attachmentInput.value = '';
+    if (files.length === 0) return;
+
+    const additions = [];
+    const rejected = [];
+    let combinedBytes = state.selectedAttachments.reduce((total, attachment) => total + attachment.file.size, 0);
+
+    for (const file of files) {
+      if (state.selectedAttachments.length + additions.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
+        rejected.push(`每条消息最多添加 ${MAX_ATTACHMENTS_PER_MESSAGE} 个附件。`);
+        continue;
+      }
+
+      const image = isImageAttachment(file);
+      const maxBytes = image ? MAX_IMAGE_BYTES : MAX_ATTACHMENT_BYTES;
+      if (file.size > maxBytes) {
+        rejected.push(image ? '图片不能超过 10 MB。' : '单个附件不能超过 25 MB。');
+        continue;
+      }
+      if (!isSupportedAttachment(file)) {
+        rejected.push('部分文件格式不受支持。');
+        continue;
+      }
+      if (combinedBytes + file.size > MAX_COMBINED_ATTACHMENT_BYTES) {
+        rejected.push('每条消息的附件总大小不能超过 50 MB。');
+        continue;
+      }
+
+      const url = image && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
+        ? URL.createObjectURL(file)
+        : '';
+      additions.push(createAttachmentSelection(file, nextAttachmentClientId, url));
+      nextAttachmentClientId += 1;
+      combinedBytes += file.size;
     }
-    if (state.selectedAttachmentUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
-      URL.revokeObjectURL(state.selectedAttachmentUrl);
-    }
-    state.selectedAttachmentFile = file;
-    state.selectedAttachmentUrl = image && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
-      ? URL.createObjectURL(file)
-      : '';
-    elements.attachmentThumbnail.classList.toggle('is-hidden', !state.selectedAttachmentUrl);
-    elements.attachmentFileIcon.classList.toggle('is-hidden', image);
-    if (state.selectedAttachmentUrl) elements.attachmentThumbnail.src = state.selectedAttachmentUrl;
-    elements.attachmentName.textContent = file.name || '已选择附件';
-    elements.attachmentPreview.classList.remove('is-hidden');
+
+    state.selectedAttachments.push(...additions);
+    renderSelectedAttachments();
+    if (rejected.length > 0) showToast(rejected[0], 'error');
+    else if (additions.length > 0) showToast(`已添加 ${additions.length} 个附件`, 'success');
     elements.messageInput.focus();
   }
 
@@ -292,10 +373,83 @@
     return document.scrollingElement || document.documentElement;
   }
 
-  function terminalScrollElement() {
-    const isMobileLayout = typeof window.matchMedia === 'function'
+  function isMobileLayout() {
+    return typeof window.matchMedia === 'function'
       && window.matchMedia('(max-width: 780px)').matches;
-    return isMobileLayout ? pageScrollElement() : elements.terminalWrap;
+  }
+
+  function isMessageInputFocused() {
+    return document.activeElement === elements.messageInput;
+  }
+
+  function clearMessageInputViewport() {
+    document.body.classList.remove('message-input-active');
+    document.documentElement.style.setProperty('--keyboard-inset', '0px');
+  }
+
+  function visibleViewportBounds() {
+    const viewport = window.visualViewport;
+    if (!viewport) return { top: 0, bottom: window.innerHeight };
+    return {
+      top: viewport.offsetTop,
+      bottom: viewport.offsetTop + viewport.height,
+    };
+  }
+
+  function syncMessageInputViewport() {
+    if (!isMobileLayout() || !isMessageInputFocused()) {
+      clearMessageInputViewport();
+      return;
+    }
+
+    const viewport = window.visualViewport;
+    const layoutHeight = document.documentElement.clientHeight || window.innerHeight;
+    const visibleBottom = viewport ? viewport.offsetTop + viewport.height : window.innerHeight;
+    const keyboardInset = Math.max(0, layoutHeight - visibleBottom);
+    document.documentElement.style.setProperty('--keyboard-inset', `${Math.ceil(keyboardInset)}px`);
+    document.body.classList.add('message-input-active');
+  }
+
+  function keepMessageInputVisible() {
+    if (!isMobileLayout() || !isMessageInputFocused()) return;
+    syncMessageInputViewport();
+
+    const input = elements.messageInput;
+    if (input.selectionStart === input.value.length && input.selectionEnd === input.value.length) {
+      input.scrollTop = input.scrollHeight;
+    }
+
+    const bounds = visibleViewportBounds();
+    const rect = input.getBoundingClientRect();
+    const bottomOverlap = rect.bottom + MESSAGE_INPUT_VIEWPORT_MARGIN - bounds.bottom;
+    const topOverlap = bounds.top + MESSAGE_INPUT_VIEWPORT_MARGIN - rect.top;
+    if (bottomOverlap > 0) {
+      window.scrollBy(0, Math.ceil(bottomOverlap));
+    } else if (topOverlap > 0) {
+      window.scrollBy(0, -Math.ceil(topOverlap));
+    }
+  }
+
+  function scheduleMessageInputVisibility() {
+    if (!isMessageInputFocused()) return;
+    const requestFrame = typeof window.requestAnimationFrame === 'function'
+      ? window.requestAnimationFrame.bind(window)
+      : (callback) => window.setTimeout(callback, 0);
+    const cancelFrame = typeof window.cancelAnimationFrame === 'function'
+      ? window.cancelAnimationFrame.bind(window)
+      : window.clearTimeout.bind(window);
+
+    if (messageInputVisibilityFrame) cancelFrame(messageInputVisibilityFrame);
+    messageInputVisibilityFrame = requestFrame(() => {
+      messageInputVisibilityFrame = 0;
+      keepMessageInputVisible();
+    });
+    window.clearTimeout(messageInputVisibilityTimer);
+    messageInputVisibilityTimer = window.setTimeout(keepMessageInputVisible, 260);
+  }
+
+  function terminalScrollElement() {
+    return isMobileLayout() ? pageScrollElement() : elements.terminalWrap;
   }
 
   function isTerminalAtBottom() {
@@ -361,7 +515,9 @@
     const pane = selectedPane();
     const zsh = isZshPane(pane);
     const canCreateWindow = Boolean(pane && !pane.dead);
+    const canRenameWindow = Boolean(pane);
     const canDeleteWindow = Boolean(pane && !pane.dead);
+    const windowActionBusy = state.creatingWindow || state.renamingWindow || state.deletingWindow;
     const completionText = elements.messageInput.value;
     const canComplete = zsh && isCompletableZshText(completionText);
     const suggestionReady = canComplete
@@ -369,13 +525,18 @@
       && state.zshSuggestion.phase === 'previewed';
     const suggestionAccepted = canComplete && hasAcceptedZshSuggestion(completionText);
     if (elements.newWindowButton) {
-      elements.newWindowButton.disabled = !canCreateWindow || state.creatingWindow || state.deletingWindow;
+      elements.newWindowButton.disabled = !canCreateWindow || windowActionBusy;
+    }
+    if (elements.renameWindowButton) {
+      elements.renameWindowButton.classList.toggle('is-hidden', !canRenameWindow);
+      elements.renameWindowButton.disabled = !canRenameWindow || windowActionBusy;
     }
     if (elements.deleteWindowButton) {
       elements.deleteWindowButton.classList.toggle('is-hidden', !canDeleteWindow);
-      elements.deleteWindowButton.disabled = !canDeleteWindow || state.deletingWindow;
+      elements.deleteWindowButton.disabled = !canDeleteWindow || windowActionBusy;
     }
-    if (elements.createWindowButton) elements.createWindowButton.disabled = state.creatingWindow;
+    if (elements.createWindowButton) elements.createWindowButton.disabled = windowActionBusy;
+    if (elements.saveWindowNameButton) elements.saveWindowNameButton.disabled = windowActionBusy;
     if (elements.zshCompleteButton) {
       elements.zshCompleteButton.classList.toggle('is-hidden', !zsh);
       elements.zshCompleteButton.disabled = !canComplete || state.sending;
@@ -399,6 +560,11 @@
           : '先显示 zsh 的灰色补全建议，不会执行命令';
     }
     elements.sendButton.disabled = !pane || state.sending;
+    elements.attachmentInput.disabled = state.sending;
+    elements.attachButton.classList.toggle('is-disabled', state.sending);
+    elements.attachmentList.querySelectorAll('.remove-attachment').forEach((button) => {
+      button.disabled = state.sending;
+    });
     elements.messageInput.placeholder = zsh
       ? '输入命令…（补全后接受，再点击 Enter 执行）'
       : '给当前 pane 发送消息…（Enter 发送，Shift+Enter 换行）';
@@ -663,7 +829,12 @@
     try {
       const payload = await api(`/api/panes/${encodeURIComponent(paneId)}/output?lines=240`);
       if (state.selectedPane !== paneId) return;
-      const shouldScrollToBottom = forceScrollBottom || isTerminalAtBottom();
+      const shouldScrollToBottom = shouldAutoScrollTerminal({
+        forceScrollBottom,
+        mobileLayout: isMobileLayout(),
+        inputFocused: isMessageInputFocused(),
+        atBottom: isTerminalAtBottom(),
+      });
       state.output = payload.output || '';
       elements.terminalOutput.textContent = state.output;
       renderTerminalMeta();
@@ -772,6 +943,77 @@
     }
   }
 
+  function openRenameWindowDialog() {
+    const pane = selectedPane();
+    if (!pane) {
+      showToast('请先选择一个 pane。', 'error');
+      return;
+    }
+    state.renameTargetPaneId = pane.id;
+    const currentName = pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`;
+    elements.renameWindowName.value = currentName;
+    if (typeof elements.renameWindowDialog.showModal === 'function') {
+      elements.renameWindowDialog.showModal();
+    } else {
+      elements.renameWindowDialog.setAttribute('open', '');
+    }
+    setTimeout(() => {
+      elements.renameWindowName.focus();
+      elements.renameWindowName.select();
+    }, 0);
+  }
+
+  function closeRenameWindowDialog() {
+    state.renameTargetPaneId = '';
+    if (typeof elements.renameWindowDialog.close === 'function' && elements.renameWindowDialog.open) {
+      elements.renameWindowDialog.close();
+    } else {
+      elements.renameWindowDialog.removeAttribute('open');
+    }
+  }
+
+  async function renameSelectedWindow(event) {
+    event.preventDefault();
+    if (state.renamingWindow) return;
+    const pane = findPaneById(state.sessions, state.renameTargetPaneId);
+    const name = elements.renameWindowName.value.trim();
+    if (!pane) {
+      closeRenameWindowDialog();
+      showToast('要重命名的 Pane 已不存在。', 'error');
+      return;
+    }
+    if (!name) {
+      elements.renameWindowName.focus();
+      showToast('请输入名称。', 'error');
+      return;
+    }
+
+    const previousName = pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`;
+    if (name === previousName) {
+      closeRenameWindowDialog();
+      return;
+    }
+
+    state.renamingWindow = true;
+    renderComposerState();
+    try {
+      const payload = await api(`/api/panes/${encodeURIComponent(pane.id)}`, {
+        method: 'PATCH',
+        body: { name },
+      });
+      await refreshSessions({ quiet: true });
+      closeRenameWindowDialog();
+      showToast(`「${previousName}」已重命名为「${payload.name || name}」`, 'success');
+    } catch (error) {
+      if (error.unauthorized) forgetToken();
+      else showToast(error.message, 'error');
+    } finally {
+      state.renamingWindow = false;
+      renderAll();
+      elements.messageInput.focus();
+    }
+  }
+
   async function deleteSelectedWindow() {
     if (state.deletingWindow) return;
     const pane = selectedPane();
@@ -805,7 +1047,7 @@
     if (state.sending) return;
     const pane = selectedPane();
     if (!isZshPane(pane)) return;
-    if (state.selectedAttachmentFile) {
+    if (state.selectedAttachments.length > 0) {
       showToast('zsh 补全不支持附件，请先移除附件。', 'error');
       return;
     }
@@ -895,13 +1137,14 @@
     event.preventDefault();
     if (state.sending) return;
     const text = elements.messageInput.value;
-    const attachmentFile = state.selectedAttachmentFile;
+    const messageAttachments = [...state.selectedAttachments];
+    const hasAttachments = messageAttachments.length > 0;
     if (!state.selectedPane) {
       showToast('请先选择一个 pane。', 'error');
       return;
     }
     const pane = selectedPane();
-    const executeAcceptedZsh = !attachmentFile
+    const executeAcceptedZsh = !hasAttachments
       && isZshPane(pane)
       && hasAcceptedZshSuggestion(text);
     if (executeAcceptedZsh) {
@@ -930,28 +1173,31 @@
       }
       return;
     }
-    if (!text && !attachmentFile) return;
+    if (!text && !hasAttachments) return;
     const paneId = state.selectedPane;
     state.zshSuggestion = null;
     state.sending = true;
     renderComposerState();
     try {
-      let attachmentId;
-      if (attachmentFile) {
-        showToast('附件上传中…');
-        const upload = await uploadAttachment(attachmentFile);
-        attachmentId = upload.attachmentId;
+      let attachmentIds = [];
+      if (hasAttachments) {
+        showToast(`正在上传 ${messageAttachments.length} 个附件…`);
+        const uploads = await resolveAttachmentUploads(messageAttachments, uploadAttachment);
+        attachmentIds = uploads.map((upload) => upload.attachmentId);
       }
       await api(`/api/panes/${encodeURIComponent(paneId)}/input`, {
         method: 'POST',
-        body: { text, submit: true, ...(attachmentId ? { attachmentId } : {}) },
+        body: { text, submit: true, ...(attachmentIds.length > 0 ? { attachmentIds } : {}) },
       });
       elements.messageInput.value = '';
       elements.messageInput.style.height = 'auto';
-      clearSelectedAttachment();
+      clearSelectedAttachments();
       showToast('消息已发送', 'success');
       if (state.selectedPane === paneId) await loadOutput({ quiet: true });
     } catch (error) {
+      if (error.status === 404) {
+        messageAttachments.forEach((attachment) => { attachment.upload = null; });
+      }
       if (error.unauthorized) forgetToken();
       else showToast(error.message, 'error');
     } finally {
@@ -992,11 +1238,14 @@
   });
   elements.quickSwitchOptions.addEventListener('keydown', moveQuickSwitcherFocus);
   elements.newWindowButton?.addEventListener('click', openNewWindowDialog);
+  elements.renameWindowButton?.addEventListener('click', openRenameWindowDialog);
   elements.deleteWindowButton?.addEventListener('click', deleteSelectedWindow);
   elements.cancelNewWindow?.addEventListener('click', closeNewWindowDialog);
   elements.newWindowForm?.addEventListener('submit', createNewWindow);
-  elements.attachmentInput.addEventListener('change', () => selectAttachment(elements.attachmentInput.files?.[0]));
-  elements.removeAttachment.addEventListener('click', clearSelectedAttachment);
+  elements.cancelRenameWindow?.addEventListener('click', closeRenameWindowDialog);
+  elements.renameWindowForm?.addEventListener('submit', renameSelectedWindow);
+  elements.renameWindowDialog?.addEventListener('close', () => { state.renameTargetPaneId = ''; });
+  elements.attachmentInput.addEventListener('change', () => selectAttachments(elements.attachmentInput.files));
   elements.zshCompleteButton?.addEventListener('click', completeZsh);
   elements.composerForm.addEventListener('submit', sendMessage);
   elements.messageInput.addEventListener('keydown', (event) => {
@@ -1008,9 +1257,18 @@
   elements.messageInput.addEventListener('input', () => {
     if (!hasCurrentZshSuggestion(elements.messageInput.value)) state.zshSuggestion = null;
     elements.messageInput.style.height = 'auto';
-    elements.messageInput.style.height = `${Math.min(elements.messageInput.scrollHeight, 140)}px`;
+    elements.messageInput.style.height = `${Math.min(elements.messageInput.scrollHeight, MESSAGE_INPUT_MAX_HEIGHT)}px`;
     renderComposerState();
+    scheduleMessageInputVisibility();
   });
+  elements.messageInput.addEventListener('focus', scheduleMessageInputVisibility);
+  elements.messageInput.addEventListener('blur', () => {
+    window.setTimeout(() => {
+      if (!isMessageInputFocused()) clearMessageInputViewport();
+    }, 0);
+  });
+  window.addEventListener('resize', scheduleMessageInputVisibility);
+  window.visualViewport?.addEventListener('resize', scheduleMessageInputVisibility);
   document.querySelectorAll('[data-key]').forEach((button) => {
     button.addEventListener('click', () => sendKey(button.dataset.key));
   });
