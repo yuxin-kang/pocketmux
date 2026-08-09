@@ -2,7 +2,7 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-08-03
+- Last refreshed: 2026-08-09
 - Primary product surfaces: 手机浏览器中的 tmux/Codex 控制台、单机 Node 服务
 - Evidence reviewed: 空仓库；运行环境中存在 tmux 3.4、Node 24，`leo_lab` 有 9 个 Codex pane
 
@@ -42,20 +42,20 @@
 
 ## Components
 - Existing components to reuse: 无。
-- New/changed components: AuthGate、SessionRail、PaneStrip、MobileQuickSwitcher、TerminalViewport、Composer、ConnectionBadge、Toast。
+- New/changed components: AuthGate、SessionRail、PaneStrip、MobileQuickSwitcher（深色底部选择面板）、TerminalViewport、Composer、ConnectionBadge、Toast。
 - Variants and states: loading、selected、busy/标题 spinner、dead pane、empty、unauthorized、offline。
 - Token/component ownership: `public/styles.css` 统一 CSS 变量；`public/app.js` 仅负责状态和 DOM 更新。
 
 ## Accessibility
 - Target standard: WCAG 2.1 AA 的实用子集。
-- Keyboard/focus behavior: 令牌输入和消息输入可回车提交；按钮有可见 focus；终端输出使用 `aria-live="polite"`，避免每次刷新抢焦点。
+- Keyboard/focus behavior: 令牌输入和消息输入可回车提交；按钮有可见 focus；MobileQuickSwitcher 支持方向键、Home/End、Escape 和选中项初始焦点；终端输出使用 `aria-live="polite"`，避免每次刷新抢焦点。
 - Contrast/readability: 输出与背景保持高对比；状态不能只依赖颜色。
 - Screen-reader semantics: 使用 `nav`、`main`、`section`、button 和明确 label。
 - Reduced motion and sensory considerations: 尊重 `prefers-reduced-motion`，不使用持续闪烁。
 
 ## Responsive behavior
 - Supported breakpoints/devices: 先支持 360px 以上手机和常见桌面浏览器。
-- Layout adaptations: 780px 以下 session 变为横向滚动条，pane 变为横向 chip；顶部保留 sticky 的 session / Pane 快速选择器，避免用户从长终端输出手动滚回页面顶部；输入区固定在终端底部附近。
+- Layout adaptations: 780px 以下 session 变为横向滚动条，pane 变为横向 chip；顶部保留 sticky 的 session / Pane 快速选择器，点击后打开统一的深色底部面板，避免原生系统弹窗破坏主题；输入区固定在终端底部附近。
 - Touch/hover differences: 触控区域至少约 44px；hover 只作补充，不承载关键操作。
 
 ## Interaction states

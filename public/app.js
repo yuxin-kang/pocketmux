@@ -86,8 +86,14 @@
     connectionStatus: document.querySelector('#connection-status'),
     refreshButton: document.querySelector('#refresh-button'),
     logoutButton: document.querySelector('#logout-button'),
-    quickSessionSelect: document.querySelector('#quick-session-select'),
-    quickPaneSelect: document.querySelector('#quick-pane-select'),
+    quickSessionButton: document.querySelector('#quick-session-button'),
+    quickSessionValue: document.querySelector('#quick-session-value'),
+    quickPaneButton: document.querySelector('#quick-pane-button'),
+    quickPaneValue: document.querySelector('#quick-pane-value'),
+    quickSwitchDialog: document.querySelector('#quick-switch-dialog'),
+    quickSwitchHeading: document.querySelector('#quick-switch-heading'),
+    quickSwitchOptions: document.querySelector('#quick-switch-options'),
+    closeQuickSwitch: document.querySelector('#close-quick-switch'),
     toast: document.querySelector('#toast'),
   };
 
@@ -485,44 +491,110 @@
     renderComposerState();
   }
 
-  function syncSelectOptions(select, options, selectedValue, disabled) {
-    const signature = JSON.stringify(options.map(({ value, label }) => [value, label]));
-    if (select.dataset.optionsSignature !== signature) {
-      const fragment = document.createDocumentFragment();
-      for (const { value, label } of options) {
-        const option = makeElement('option', '', label);
-        option.value = value;
-        fragment.append(option);
-      }
-      select.replaceChildren(fragment);
-      select.dataset.optionsSignature = signature;
+  function quickSwitchItems(kind) {
+    if (kind === 'session') {
+      return state.sessions.map((session) => ({ value: session.name, label: session.name }));
     }
 
-    select.disabled = disabled;
-    if (select.value !== selectedValue && options.some((option) => option.value === selectedValue)) {
-      select.value = selectedValue;
-    }
+    return (selectedSession()?.panes || []).map((pane) => ({
+      value: pane.id,
+      label: pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`,
+    }));
   }
 
   function renderQuickSwitcher() {
-    const sessionSelect = elements.quickSessionSelect;
-    const paneSelect = elements.quickPaneSelect;
-    if (!sessionSelect || !paneSelect) return;
-
-    const sessionOptions = state.sessions.length > 0
-      ? state.sessions.map((session) => ({ value: session.name, label: session.name }))
-      : [{ value: '', label: '暂无会话' }];
-    syncSelectOptions(sessionSelect, sessionOptions, state.selectedSession, state.sessions.length === 0);
-
     const session = selectedSession();
-    const panes = session?.panes || [];
-    const paneOptions = panes.length > 0
-      ? panes.map((pane) => ({
-        value: pane.id,
-        label: pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`,
-      }))
-      : [{ value: '', label: '暂无 Pane' }];
-    syncSelectOptions(paneSelect, paneOptions, state.selectedPane, panes.length === 0);
+    const pane = selectedPane();
+    const sessionLabel = session?.name || '暂无会话';
+    const paneLabel = pane
+      ? pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`
+      : '暂无 Pane';
+
+    elements.quickSessionValue.textContent = sessionLabel;
+    elements.quickPaneValue.textContent = paneLabel;
+    elements.quickSessionButton.disabled = state.sessions.length === 0;
+    elements.quickPaneButton.disabled = !session || session.panes.length === 0;
+    elements.quickSessionButton.setAttribute('aria-label', `快速切换 tmux 会话，当前：${sessionLabel}`);
+    elements.quickPaneButton.setAttribute('aria-label', `快速切换当前会话的 Pane，当前：${paneLabel}`);
+  }
+
+  function resetQuickSwitcherState() {
+    document.body.classList.remove('quick-switch-open');
+    elements.quickSessionButton.setAttribute('aria-expanded', 'false');
+    elements.quickPaneButton.setAttribute('aria-expanded', 'false');
+  }
+
+  function closeQuickSwitcher() {
+    const dialog = elements.quickSwitchDialog;
+    if (!dialog) return;
+    if (typeof dialog.close === 'function' && dialog.open) {
+      dialog.close();
+    } else {
+      dialog.removeAttribute('open');
+      resetQuickSwitcherState();
+    }
+  }
+
+  function openQuickSwitcher(kind) {
+    const dialog = elements.quickSwitchDialog;
+    const items = quickSwitchItems(kind);
+    if (!dialog || items.length === 0) return;
+
+    const selectedValue = kind === 'session' ? state.selectedSession : state.selectedPane;
+    elements.quickSwitchHeading.textContent = kind === 'session' ? '选择会话' : '选择窗口';
+    elements.quickSwitchOptions.replaceChildren();
+
+    let initialOption = null;
+    for (const item of items) {
+      const selected = item.value === selectedValue;
+      const button = makeElement('button', 'quick-switch-option');
+      button.type = 'button';
+      button.tabIndex = -1;
+      button.setAttribute('role', 'option');
+      button.setAttribute('aria-selected', String(selected));
+      button.append(
+        makeElement('span', 'quick-switch-option-label', item.label),
+        makeElement('span', 'quick-switch-option-marker', selected ? '✓' : ''),
+      );
+      button.addEventListener('click', () => {
+        closeQuickSwitcher();
+        if (kind === 'session') void selectSession(item.value);
+        else void selectPane(item.value);
+      });
+      elements.quickSwitchOptions.append(button);
+      if (selected) initialOption = button;
+    }
+
+    initialOption ||= elements.quickSwitchOptions.querySelector('.quick-switch-option');
+    if (initialOption) initialOption.tabIndex = 0;
+
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else dialog.setAttribute('open', '');
+    document.body.classList.add('quick-switch-open');
+    elements.quickSessionButton.setAttribute('aria-expanded', String(kind === 'session'));
+    elements.quickPaneButton.setAttribute('aria-expanded', String(kind === 'pane'));
+
+    setTimeout(() => {
+      initialOption?.scrollIntoView({ block: 'nearest' });
+      initialOption?.focus({ preventScroll: true });
+    }, 0);
+  }
+
+  function moveQuickSwitcherFocus(event) {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const options = [...elements.quickSwitchOptions.querySelectorAll('.quick-switch-option')];
+    if (options.length === 0) return;
+
+    event.preventDefault();
+    const currentIndex = options.indexOf(document.activeElement);
+    let nextIndex;
+    if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = options.length - 1;
+    else if (event.key === 'ArrowUp') nextIndex = currentIndex <= 0 ? options.length - 1 : currentIndex - 1;
+    else nextIndex = currentIndex < 0 || currentIndex === options.length - 1 ? 0 : currentIndex + 1;
+
+    options.forEach((option, index) => { option.tabIndex = index === nextIndex ? 0 : -1; });
+    options[nextIndex].focus();
   }
 
   function renderAll() {
@@ -911,12 +983,14 @@
   });
   elements.refreshButton.addEventListener('click', () => refreshSessions());
   elements.logoutButton.addEventListener('click', forgetToken);
-  elements.quickSessionSelect.addEventListener('change', () => {
-    if (elements.quickSessionSelect.value) selectSession(elements.quickSessionSelect.value);
+  elements.quickSessionButton.addEventListener('click', () => openQuickSwitcher('session'));
+  elements.quickPaneButton.addEventListener('click', () => openQuickSwitcher('pane'));
+  elements.closeQuickSwitch.addEventListener('click', closeQuickSwitcher);
+  elements.quickSwitchDialog.addEventListener('close', resetQuickSwitcherState);
+  elements.quickSwitchDialog.addEventListener('click', (event) => {
+    if (event.target === elements.quickSwitchDialog) closeQuickSwitcher();
   });
-  elements.quickPaneSelect.addEventListener('change', () => {
-    if (elements.quickPaneSelect.value) selectPane(elements.quickPaneSelect.value);
-  });
+  elements.quickSwitchOptions.addEventListener('keydown', moveQuickSwitcherFocus);
   elements.newWindowButton?.addEventListener('click', openNewWindowDialog);
   elements.deleteWindowButton?.addEventListener('click', deleteSelectedWindow);
   elements.cancelNewWindow?.addEventListener('click', closeNewWindowDialog);

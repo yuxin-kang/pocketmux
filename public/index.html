@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#111317">
     <meta name="description" content="从手机查看和控制电脑上的 tmux / Codex 会话">
     <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/styles.css?v=20260805-window-delete">
+    <link rel="stylesheet" href="/styles.css?v=20260809-custom-switcher">
     <title>pocketmux</title>
   </head>
   <body>
@@ -52,11 +52,29 @@
 
         <div id="mobile-switcher" class="mobile-switcher" aria-label="快速切换会话与 Pane">
           <span class="mobile-switcher-label">切换</span>
-          <label class="sr-only" for="quick-session-select">快速切换 tmux 会话</label>
-          <select id="quick-session-select" aria-label="快速切换 tmux 会话" disabled></select>
-          <label class="sr-only" for="quick-pane-select">快速切换当前会话的 Pane</label>
-          <select id="quick-pane-select" aria-label="快速切换当前会话的 Pane" disabled></select>
+          <button id="quick-session-button" class="quick-switch-trigger" type="button" aria-haspopup="dialog" aria-controls="quick-switch-dialog" aria-expanded="false" aria-label="快速切换 tmux 会话" disabled>
+            <span id="quick-session-value" class="quick-switch-value">暂无会话</span>
+            <span class="quick-switch-chevron" aria-hidden="true">⌄</span>
+          </button>
+          <button id="quick-pane-button" class="quick-switch-trigger" type="button" aria-haspopup="dialog" aria-controls="quick-switch-dialog" aria-expanded="false" aria-label="快速切换当前会话的 Pane" disabled>
+            <span id="quick-pane-value" class="quick-switch-value">暂无 Pane</span>
+            <span class="quick-switch-chevron" aria-hidden="true">⌄</span>
+          </button>
         </div>
+
+        <dialog id="quick-switch-dialog" class="quick-switch-dialog" aria-labelledby="quick-switch-heading">
+          <div class="quick-switch-sheet">
+            <div class="quick-switch-grabber" aria-hidden="true"></div>
+            <header class="quick-switch-heading-row">
+              <div>
+                <div class="section-kicker">QUICK SWITCH</div>
+                <h2 id="quick-switch-heading">选择</h2>
+              </div>
+              <button id="close-quick-switch" class="quick-switch-close" type="button" aria-label="关闭选择面板">×</button>
+            </header>
+            <div id="quick-switch-options" class="quick-switch-options" role="listbox" aria-labelledby="quick-switch-heading"></div>
+          </div>
+        </dialog>
 
         <div class="workspace">
           <nav class="session-rail" aria-label="tmux 会话">
@@ -157,6 +175,6 @@
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </div>
     <noscript>需要启用 JavaScript 才能使用 pocketmux。</noscript>
-    <script src="/app.js?v=20260807-switcher-stable" defer></script>
+    <script src="/app.js?v=20260809-custom-switcher" defer></script>
   </body>
 </html>
