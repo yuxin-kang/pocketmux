@@ -54,19 +54,68 @@ Open one of the printed URLs on your phone or desktop. The token is removed from
 
 ## Remote Access
 
-For normal remote access, place Pocketmux behind an encrypted private connection such as Tailscale or an SSH tunnel. To bind only to the local machine:
+For regular remote access, place Pocketmux behind an encrypted private connection such as Tailscale or an SSH tunnel. For temporary testing, you can use a Cloudflare Quick Tunnel without creating a Cloudflare account.
+
+### 1. Install `cloudflared`
+
+On Debian or Ubuntu:
 
 ```bash
+curl --location --output cloudflared.deb \
+  "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$(dpkg --print-architecture).deb"
+sudo dpkg -i cloudflared.deb
+```
+
+On macOS:
+
+```bash
+brew install cloudflared
+```
+
+For Windows, RPM-based Linux distributions, and manual binary downloads, follow the official [`cloudflared` installation guide](https://developers.cloudflare.com/tunnel/downloads/).
+
+Confirm the installation:
+
+```bash
+cloudflared --version
+```
+
+### 2. Run Pocketmux and the tunnel in two terminals
+
+Keep both terminal windows open while using Pocketmux.
+
+In **Terminal 1**, start Pocketmux and copy the printed `Access token`:
+
+```bash
+cd pocketmux
 HOST=127.0.0.1 PORT=3789 npm start
 ```
 
-For temporary testing, a [Cloudflare Quick Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) can forward the local service:
+```text
+Access token: 0123456789abcdef
+```
+
+In **Terminal 2**, start the Quick Tunnel and copy the generated `trycloudflare.com` URL:
 
 ```bash
 cloudflared tunnel --url http://127.0.0.1:3789
 ```
 
-Treat both the public tunnel URL and the Pocketmux access token as sensitive. Quick Tunnels are intended for testing and do not provide an uptime guarantee.
+```text
+https://random-words.trycloudflare.com
+```
+
+### 3. Add the Pocketmux token to the public URL
+
+Append `/?token=<pocketmux-token>` to the Cloudflare URL, then open the combined address on your phone:
+
+```text
+https://random-words.trycloudflare.com/?token=0123456789abcdef
+```
+
+Use the Pocketmux `Access token` printed in Terminal 1—not any Cloudflare credential. Treat both the public URL and token as sensitive. Restarting Pocketmux may generate a new token, and restarting the Quick Tunnel generates a new public URL.
+
+[Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) are intended for testing and development only and do not provide an uptime guarantee.
 
 ## Using Pocketmux
 
