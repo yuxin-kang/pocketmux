@@ -1,0 +1,24 @@
+{
+  "name": "pocketmux-native",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Pocketmux native connection shell for Windows and Android",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node --check src/connection.js && node --check src/connection-switch.js && node --check src/drawer-gesture.js && node --check src/i18n.js && node --check src/storage.js && node --check src/remote-session.js && node --check src/main.js",
+    "test": "node --test",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "android:init": "tauri android init",
+    "android:dev": "tauri android dev",
+    "android:build": "tauri android build",
+    "windows:build": "tauri build --bundles nsis,msi",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

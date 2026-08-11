@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#101114">
+    <meta name="description" content="Connect the Pocketmux app to a self-hosted Pocketmux server">
+    <link rel="icon" href="assets/pocketmux-icon.png" type="image/png">
+    <link rel="stylesheet" href="styles.css">
+    <title>Pocketmux</title>
+    <script type="module" src="main.js" defer></script>
+  </head>
+  <body>
+    <div class="app-frame">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true"><img src="assets/pocketmux-icon.png" alt=""></span>
+          <div>
+            <div class="product-name">pocketmux</div>
+            <div class="product-subtitle" data-i18n="shell.subtitle">原生连接器</div>
+          </div>
+        </div>
+        <div id="language-switch" class="language-switch" role="group" aria-label="语言选择" data-i18n-aria-label="language.label">
+          <button class="language-button" type="button" data-language="zh" aria-pressed="true">中</button>
+          <button class="language-button" type="button" data-language="en" aria-pressed="false">EN</button>
+        </div>
+      </header>
+
+      <main id="launcher" class="launcher">
+        <section class="connection-card" aria-labelledby="connection-title">
+          <div class="platform-badge"><span class="badge-dot"></span><span>Windows · Android</span></div>
+          <div class="heading-group">
+            <p class="eyebrow" data-i18n="connect.eyebrow">远程连接</p>
+            <h1 id="connection-title" data-i18n="connect.title">连接到 Pocketmux</h1>
+            <p class="intro" data-i18n="connect.intro">输入正在运行的 Pocketmux 地址。连接后会直接打开原有网页界面。</p>
+          </div>
+
+          <form id="connection-form" class="connection-form" novalidate>
+            <label for="server-url" data-i18n="connect.urlLabel">服务器地址</label>
+            <input id="server-url" name="serverUrl" type="text" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="https://example.trycloudflare.com" data-i18n-placeholder="connect.urlPlaceholder" required>
+            <p class="field-hint" data-i18n="connect.urlHint">也可以粘贴包含 ?token= 的完整 Pocketmux 地址。</p>
+
+            <label for="access-token" data-i18n="connect.tokenLabel">访问令牌</label>
+            <div class="token-row">
+              <input id="access-token" name="token" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="可选：地址中已有 token 时留空" data-i18n-placeholder="connect.tokenPlaceholder">
+              <button id="toggle-token" class="token-toggle" type="button" aria-label="显示访问令牌" title="显示访问令牌" data-i18n-aria-label="connect.showToken" data-i18n-title="connect.showToken">◎</button>
+            </div>
+
+            <div id="connection-warning" class="connection-warning is-hidden" role="status"></div>
+            <div id="connection-error" class="connection-error" role="alert"></div>
+            <button id="connect-button" class="primary-button" type="submit">
+              <span data-i18n="connect.action">连接</span>
+              <span aria-hidden="true">→</span>
+            </button>
+          </form>
+
+          <div class="privacy-note">
+            <span class="privacy-icon" aria-hidden="true">◇</span>
+            <p data-i18n="connect.privacy">App 只会在本机保存验证成功的服务器地址和 Token；错误或不可达的地址不会写入连接记录。</p>
+          </div>
+        </section>
+
+        <section class="recent-card" aria-labelledby="recent-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow" data-i18n="recent.eyebrow">连接记录</p>
+              <h2 id="recent-title" data-i18n="recent.title">最近的服务器</h2>
+            </div>
+            <span id="recent-count" class="count-badge">0</span>
+          </div>
+          <ul id="recent-list" class="recent-list"></ul>
+          <p id="recent-empty" class="recent-empty" data-i18n="recent.empty">连接过的服务器地址会显示在这里。</p>
+        </section>
+      </main>
+
+      <section id="remote-shell" class="remote-shell is-hidden" aria-label="远程 Pocketmux" data-i18n-aria-label="remote.regionLabel">
+        <button id="remote-menu-toggle" class="remote-menu-toggle" type="button" aria-expanded="false" aria-controls="remote-drawer" aria-label="打开连接菜单" title="打开连接菜单" data-i18n-aria-label="remote.menu" data-i18n-title="remote.menu">
+          <span aria-hidden="true">☰</span>
+        </button>
+        <div id="drawer-edge-target" class="drawer-edge-target" aria-hidden="true"></div>
+        <div id="remote-drawer-backdrop" class="remote-drawer-backdrop is-hidden"></div>
+        <aside id="remote-drawer" class="remote-drawer" aria-hidden="true" inert aria-labelledby="remote-drawer-title">
+          <div class="drawer-header">
+            <div class="brand-lockup">
+              <span class="brand-mark" aria-hidden="true"><img src="assets/pocketmux-icon.png" alt=""></span>
+              <div>
+                <div class="product-name">pocketmux</div>
+                <div class="product-subtitle" data-i18n="shell.subtitle">原生连接器</div>
+              </div>
+            </div>
+            <button id="close-remote-drawer" class="drawer-close" type="button" aria-label="关闭连接菜单" title="关闭连接菜单" data-i18n-aria-label="remote.closeMenu" data-i18n-title="remote.closeMenu">×</button>
+          </div>
+          <div class="drawer-content">
+            <p class="eyebrow" data-i18n="remote.drawerTitle">当前连接</p>
+            <h2 id="remote-drawer-title" class="drawer-title">Pocketmux</h2>
+            <div class="remote-context">
+              <span id="remote-status" class="remote-status" role="status" data-i18n="remote.loading">正在连接</span>
+              <strong id="remote-server" class="remote-server"></strong>
+              <span id="remote-notice" class="remote-notice" role="status"></span>
+            </div>
+
+            <section class="switch-panel" aria-labelledby="switch-panel-title">
+              <p id="switch-panel-title" class="switch-title" data-i18n="remote.switchTitle">选择其他连接</p>
+              <div id="switch-target-list" class="switch-target-list" role="radiogroup" aria-label="可切换连接" data-i18n-aria-label="remote.switchTargets"></div>
+              <button id="switch-connection" class="drawer-action drawer-action-switch" type="button" disabled>
+                <span aria-hidden="true">⇄</span>
+                <span data-i18n="remote.switchAction">切换</span>
+              </button>
+            </section>
+
+            <div class="drawer-actions">
+              <button id="refresh-remote" class="drawer-action" type="button" aria-label="刷新远程页面" title="刷新远程页面" data-i18n-aria-label="remote.refresh" data-i18n-title="remote.refresh">
+                <span aria-hidden="true">↻</span>
+                <span data-i18n="remote.refresh">刷新远程页面</span>
+              </button>
+              <button id="exit-app" class="drawer-action drawer-action-exit" type="button" aria-label="退出 Pocketmux" title="退出 Pocketmux" data-i18n-aria-label="remote.exitAction" data-i18n-title="remote.exitAction">
+                <span aria-hidden="true">⏻</span>
+                <span data-i18n="remote.exitAction">退出</span>
+              </button>
+            </div>
+          </div>
+        </aside>
+
+        <div id="remote-loading-cover" class="remote-loading-cover" role="status" aria-live="polite">
+          <span class="loading-brand" aria-hidden="true"><img src="assets/pocketmux-icon.png" alt=""></span>
+          <span id="remote-loading-spinner" class="remote-loading-spinner" aria-hidden="true"></span>
+          <strong id="remote-loading-title" class="remote-loading-title">正在打开 Pocketmux</strong>
+          <span id="remote-loading-hint" class="remote-loading-hint">正在验证连接并加载远程界面…</span>
+          <button id="retry-remote" class="remote-retry is-hidden" type="button" data-i18n="remote.retry">重新加载</button>
+        </div>
+        <iframe id="remote-frame" class="remote-frame" src="about:blank" title="Pocketmux 远程界面" data-i18n-title="remote.frameTitle" sandbox="allow-scripts allow-forms allow-same-origin allow-downloads allow-modals" referrerpolicy="no-referrer"></iframe>
+      </section>
+
+      <footer id="app-footer" class="app-footer">
+        <span class="status-dot"></span>
+        <span data-i18n="footer.note">Pocketmux App 是远程客户端；tmux 与 Agent 继续运行在服务器电脑上。</span>
+      </footer>
+    </div>
+  </body>
+</html>
