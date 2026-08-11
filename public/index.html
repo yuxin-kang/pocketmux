@@ -4,62 +4,72 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#111317">
-    <meta name="description" content="从手机查看和控制电脑上的 tmux / Codex 会话">
+    <meta name="description" content="从手机查看和控制电脑上的 tmux 会话" data-i18n-content="meta.description">
     <link rel="icon" href="/favicon.ico?v=20260809-pocketmux-bmp" type="image/x-icon" sizes="16x16 32x32 48x48">
     <link rel="shortcut icon" href="/favicon.ico?v=20260809-pocketmux-bmp" type="image/x-icon">
     <link rel="apple-touch-icon" href="/assets/pocketmux-icon-192.png?v=20260809-pocketmux" sizes="192x192">
     <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/styles.css?v=20260809-keyboard-viewport">
+    <link rel="stylesheet" href="/styles.css?v=20260811-compact-language-switch">
     <title>pocketmux</title>
   </head>
   <body>
     <div id="app">
       <section id="auth-gate" class="auth-gate" aria-labelledby="auth-title">
         <div class="auth-card">
-          <div class="eyebrow">REMOTE CONSOLE / LOCAL FIRST</div>
+          <div class="auth-card-toolbar">
+            <div class="eyebrow" data-i18n="auth.eyebrow">远程控制台 / 本地优先</div>
+            <div id="auth-language-switch" class="language-switch" role="group" aria-label="语言选择" data-i18n-aria-label="language.label">
+              <button class="language-button" type="button" data-language="zh" aria-pressed="true">中</button>
+              <button class="language-button" type="button" data-language="en" aria-pressed="false">EN</button>
+            </div>
+          </div>
           <div class="brand-lockup">
             <span class="brand-mark" aria-hidden="true"><img src="/assets/pocketmux-icon.png" alt=""></span>
             <div>
               <h1 id="auth-title">pocketmux</h1>
-              <p>把电脑上的 Codex 会话带到手机上。</p>
+              <p data-i18n="auth.tagline">把电脑上的 tmux 会话和各种 Agent 带到手机上。</p>
             </div>
           </div>
-          <p class="auth-copy">输入服务启动时显示的访问令牌。令牌只用于这个控制台，不会保存终端输出。</p>
+          <p class="auth-copy" data-i18n="auth.copy">输入服务启动时显示的访问令牌。令牌只用于这个控制台，不会保存终端输出。</p>
           <form id="token-form" class="token-form">
-            <label for="token-input">访问令牌</label>
+            <label for="token-input" data-i18n="auth.tokenLabel">访问令牌</label>
             <div class="token-row">
-              <input id="token-input" name="token" type="password" autocomplete="current-password" spellcheck="false" placeholder="粘贴令牌" required>
-              <button class="primary-button" type="submit">连接</button>
+              <input id="token-input" name="token" type="password" autocomplete="current-password" spellcheck="false" placeholder="粘贴令牌" data-i18n-placeholder="auth.tokenPlaceholder" required>
+              <button class="primary-button" type="submit" data-i18n="auth.connect">连接</button>
             </div>
           </form>
           <p id="auth-error" class="form-error" role="alert"></p>
-          <div class="security-note"><span class="note-dot"></span><span>服务只提供 tmux 目标和常用控制键，不提供任意 shell API。</span></div>
+          <div class="security-note"><span class="note-dot"></span><span data-i18n="auth.security">服务只提供 tmux 目标和常用控制键，不提供任意 shell API。</span></div>
         </div>
       </section>
 
-      <section id="app-shell" class="app-shell is-hidden" aria-label="pocketmux 控制台">
+      <section id="app-shell" class="app-shell is-hidden" aria-label="pocketmux 控制台" data-i18n-aria-label="shell.aria">
         <header class="topbar">
           <div class="brand-lockup compact">
             <span class="brand-mark" aria-hidden="true"><img src="/assets/pocketmux-icon.png" alt=""></span>
             <div>
               <div class="product-name">pocketmux</div>
-              <div class="product-subtitle">phone control surface</div>
+              <div class="product-subtitle" data-i18n="shell.productSubtitle">手机控制界面</div>
             </div>
           </div>
           <div class="topbar-actions">
             <div id="connection-status" class="connection-status" role="status"><span class="status-dot"></span><span>连接中</span></div>
-            <button id="refresh-button" class="icon-button" type="button" aria-label="刷新会话" title="刷新会话">↻</button>
-            <button id="logout-button" class="ghost-button" type="button">退出</button>
+            <div id="language-switch" class="language-switch" role="group" aria-label="语言选择" data-i18n-aria-label="language.label">
+              <button class="language-button" type="button" data-language="zh" aria-pressed="true">中</button>
+              <button class="language-button" type="button" data-language="en" aria-pressed="false">EN</button>
+            </div>
+            <button id="refresh-button" class="icon-button" type="button" aria-label="刷新会话" title="刷新会话" data-i18n-aria-label="action.refresh" data-i18n-title="action.refresh">↻</button>
+            <button id="logout-button" class="ghost-button" type="button" data-i18n="action.logout">退出</button>
           </div>
         </header>
 
-        <div id="mobile-switcher" class="mobile-switcher" aria-label="快速切换会话与 Pane">
-          <span class="mobile-switcher-label">切换</span>
-          <button id="quick-session-button" class="quick-switch-trigger" type="button" aria-haspopup="dialog" aria-controls="quick-switch-dialog" aria-expanded="false" aria-label="快速切换 tmux 会话" disabled>
+        <div id="mobile-switcher" class="mobile-switcher" aria-label="快速切换会话与 Pane" data-i18n-aria-label="switcher.aria">
+          <span class="mobile-switcher-label" data-i18n="switcher.label">切换</span>
+          <button id="quick-session-button" class="quick-switch-trigger" type="button" aria-haspopup="dialog" aria-controls="quick-switch-dialog" aria-expanded="false" aria-label="快速切换 tmux 会话" data-i18n-aria-label="switcher.sessionAria" disabled>
             <span id="quick-session-value" class="quick-switch-value">暂无会话</span>
             <span class="quick-switch-chevron" aria-hidden="true">⌄</span>
           </button>
-          <button id="quick-pane-button" class="quick-switch-trigger" type="button" aria-haspopup="dialog" aria-controls="quick-switch-dialog" aria-expanded="false" aria-label="快速切换当前会话的 Pane" disabled>
+          <button id="quick-pane-button" class="quick-switch-trigger" type="button" aria-haspopup="dialog" aria-controls="quick-switch-dialog" aria-expanded="false" aria-label="快速切换当前会话的 Pane" data-i18n-aria-label="switcher.paneAria" disabled>
             <span id="quick-pane-value" class="quick-switch-value">暂无 Pane</span>
             <span class="quick-switch-chevron" aria-hidden="true">⌄</span>
           </button>
@@ -70,32 +80,32 @@
             <div class="quick-switch-grabber" aria-hidden="true"></div>
             <header class="quick-switch-heading-row">
               <div>
-                <div class="section-kicker">QUICK SWITCH</div>
-                <h2 id="quick-switch-heading">选择</h2>
+                <div class="section-kicker" data-i18n="switcher.kicker">快速切换</div>
+                <h2 id="quick-switch-heading" data-i18n="switcher.choose">选择</h2>
               </div>
-              <button id="close-quick-switch" class="quick-switch-close" type="button" aria-label="关闭选择面板">×</button>
+              <button id="close-quick-switch" class="quick-switch-close" type="button" aria-label="关闭选择面板" data-i18n-aria-label="switcher.close">×</button>
             </header>
             <div id="quick-switch-options" class="quick-switch-options" role="listbox" aria-labelledby="quick-switch-heading"></div>
           </div>
         </dialog>
 
         <div class="workspace">
-          <nav class="session-rail" aria-label="tmux 会话">
+          <nav class="session-rail" aria-label="tmux 会话" data-i18n-aria-label="sessions.navAria">
             <div class="rail-heading">
               <div>
-                <div class="section-kicker">TMUX SESSIONS</div>
-                <h2>会话</h2>
+                <div class="section-kicker" data-i18n="sessions.kicker">TMUX 会话</div>
+                <h2 data-i18n="sessions.heading">会话</h2>
               </div>
               <span id="session-count" class="count-badge">0</span>
             </div>
             <div id="session-list" class="session-list" role="list"></div>
-            <div class="rail-footer">选择会话后，下面会列出它的每个 window / pane。</div>
+            <div class="rail-footer" data-i18n="sessions.footer">选择会话后，下面会列出它的每个 window / pane。</div>
           </nav>
 
           <main class="main-panel">
             <div class="content-heading">
               <div>
-                <div class="section-kicker">CURRENT SESSION</div>
+                <div class="section-kicker" data-i18n="current.kicker">当前会话</div>
                 <h2 id="current-session-name">等待选择</h2>
               </div>
               <div id="session-meta" class="session-meta">—</div>
@@ -104,14 +114,14 @@
             <section class="pane-section" aria-labelledby="pane-heading">
               <div class="section-heading-row">
                 <div>
-                  <div class="section-kicker">WINDOWS / PANES</div>
-                  <h3 id="pane-heading">工作区</h3>
+                  <div class="section-kicker" data-i18n="panes.kicker">窗口 / PANE</div>
+                  <h3 id="pane-heading" data-i18n="panes.heading">工作区</h3>
                 </div>
                 <div class="pane-section-actions">
                   <span id="pane-count" class="muted-label">0 个 pane</span>
-                  <button id="new-window-button" class="new-window-button" type="button">＋ 新建 zsh</button>
-                  <button id="rename-window-button" class="new-window-button" type="button">✎ 重命名</button>
-                  <button id="delete-window-button" class="new-window-button delete-window-button" type="button">− 删除窗口</button>
+                  <button id="new-window-button" class="new-window-button" type="button" data-i18n="windows.new">＋ 新建 zsh</button>
+                  <button id="rename-window-button" class="new-window-button" type="button" data-i18n="windows.rename">✎ 重命名</button>
+                  <button id="delete-window-button" class="new-window-button delete-window-button" type="button" data-i18n="windows.delete">− 删除窗口</button>
                 </div>
               </div>
               <div id="pane-list" class="pane-list" role="list"></div>
@@ -119,24 +129,24 @@
 
             <dialog id="new-window-dialog" class="window-dialog" aria-labelledby="new-window-heading">
               <form id="new-window-form" class="window-dialog-form">
-                <h3 id="new-window-heading">新建 zsh 窗口</h3>
-                <label for="new-window-name">窗口名称</label>
-                <input id="new-window-name" type="text" maxlength="64" required placeholder="例如：zsh" autocomplete="off">
+                <h3 id="new-window-heading" data-i18n="windows.newTitle">新建 zsh 窗口</h3>
+                <label for="new-window-name" data-i18n="windows.nameLabel">窗口名称</label>
+                <input id="new-window-name" type="text" maxlength="64" required placeholder="例如：zsh" data-i18n-placeholder="windows.namePlaceholder" autocomplete="off">
                 <div class="window-dialog-actions">
-                  <button id="cancel-new-window" class="dialog-button" type="button">取消</button>
-                  <button id="create-window-button" class="dialog-button primary" type="submit">创建窗口</button>
+                  <button id="cancel-new-window" class="dialog-button" type="button" data-i18n="windows.cancel">取消</button>
+                  <button id="create-window-button" class="dialog-button primary" type="submit" data-i18n="windows.create">创建窗口</button>
                 </div>
               </form>
             </dialog>
 
             <dialog id="rename-window-dialog" class="window-dialog" aria-labelledby="rename-window-heading">
               <form id="rename-window-form" class="window-dialog-form">
-                <h3 id="rename-window-heading">重命名 Pane</h3>
-                <label for="rename-window-name">显示名称</label>
-                <input id="rename-window-name" type="text" maxlength="64" required placeholder="输入新的名称" autocomplete="off">
+                <h3 id="rename-window-heading" data-i18n="windows.renameTitle">重命名 Pane</h3>
+                <label for="rename-window-name" data-i18n="windows.displayNameLabel">显示名称</label>
+                <input id="rename-window-name" type="text" maxlength="64" required placeholder="输入新的名称" data-i18n-placeholder="windows.renamePlaceholder" autocomplete="off">
                 <div class="window-dialog-actions">
-                  <button id="cancel-rename-window" class="dialog-button" type="button">取消</button>
-                  <button id="save-window-name-button" class="dialog-button primary" type="submit">保存名称</button>
+                  <button id="cancel-rename-window" class="dialog-button" type="button" data-i18n="windows.cancel">取消</button>
+                  <button id="save-window-name-button" class="dialog-button primary" type="submit" data-i18n="windows.save">保存名称</button>
                 </div>
               </form>
             </dialog>
@@ -146,36 +156,36 @@
                 <div class="terminal-title-wrap">
                   <span class="terminal-glyph" aria-hidden="true">▣</span>
                   <div>
-                    <h3 id="terminal-heading">终端输出</h3>
+                    <h3 id="terminal-heading" data-i18n="terminal.heading">终端输出</h3>
                     <div id="current-pane-meta" class="terminal-meta">未选择 pane</div>
                   </div>
                 </div>
                 <span id="last-updated" class="last-updated">—</span>
               </div>
               <div id="terminal-wrap" class="terminal-wrap">
-                <pre id="terminal-output" class="terminal-output" tabindex="0" aria-live="polite" aria-label="当前 pane 的终端输出"></pre>
-                <div id="terminal-empty" class="terminal-empty">选择一个 pane 查看最近输出</div>
+                <pre id="terminal-output" class="terminal-output" tabindex="0" aria-live="polite" aria-label="当前 pane 的终端输出" data-i18n-aria-label="terminal.outputAria"></pre>
+                <div id="terminal-empty" class="terminal-empty" data-i18n="terminal.empty">选择一个 pane 查看最近输出</div>
               </div>
               <div class="composer-area">
-                <div class="shortcut-row" aria-label="常用控制键">
+                <div class="shortcut-row" aria-label="常用控制键" data-i18n-aria-label="terminal.shortcutsAria">
                   <button class="shortcut-button danger" type="button" data-key="C-c">Ctrl-C</button>
                   <button class="shortcut-button" type="button" data-key="Escape">Esc</button>
-                  <button class="shortcut-button" type="button" data-key="C-l">清屏</button>
+                  <button class="shortcut-button" type="button" data-key="C-l" data-i18n="terminal.clear">清屏</button>
                   <button id="zsh-complete-button" class="shortcut-button is-hidden" type="button" aria-label="显示 zsh 补全建议">显示补全</button>
                   <button class="shortcut-button" type="button" data-key="Up">↑</button>
                   <button class="shortcut-button" type="button" data-key="Down">↓</button>
                   <button class="shortcut-button" type="button" data-key="Enter">Enter</button>
                 </div>
-                <div id="attachment-list" class="attachment-list is-hidden" aria-live="polite" aria-label="待发送附件"></div>
+                <div id="attachment-list" class="attachment-list is-hidden" aria-live="polite" aria-label="待发送附件" data-i18n-aria-label="composer.attachmentsAria"></div>
                 <form id="composer-form" class="composer-form">
-                  <label id="attach-button" class="attach-button" for="attachment-input" title="选择一个或多个附件">
-                    <span>附件</span>
+                  <label id="attach-button" class="attach-button" for="attachment-input" title="选择一个或多个附件" data-i18n-title="composer.attachTitle">
+                    <span data-i18n="composer.attach">附件</span>
                     <span id="attachment-count" class="attachment-count is-hidden" aria-hidden="true"></span>
                   </label>
                   <input id="attachment-input" class="sr-only" type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.json,.xml,.yaml,.yml,.rtf,.log,.doc,.docx,.xls,.xlsx,.ppt,.pptx">
-                  <label class="sr-only" for="message-input">发送到当前 pane</label>
-                  <textarea id="message-input" rows="1" placeholder="给当前 pane 发送消息…（Enter 发送，Shift+Enter 换行）" autocomplete="off" spellcheck="false"></textarea>
-                  <button id="send-button" class="send-button" type="submit" aria-label="发送消息">↑</button>
+                  <label class="sr-only" for="message-input" data-i18n="composer.messageLabel">发送到当前 pane</label>
+                  <textarea id="message-input" rows="1" placeholder="给当前 pane 发送消息…（Enter 发送，Shift+Enter 换行）" data-i18n-placeholder="composer.messagePlaceholder" autocomplete="off" spellcheck="false"></textarea>
+                  <button id="send-button" class="send-button" type="submit" aria-label="发送消息" data-i18n-aria-label="composer.sendAria">↑</button>
                 </form>
               </div>
             </section>
@@ -185,7 +195,8 @@
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </div>
     <noscript>需要启用 JavaScript 才能使用 pocketmux。</noscript>
+    <script src="/i18n.js?v=20260810-language-switch" defer></script>
     <script src="/app-helpers.js?v=20260809-review-fixes" defer></script>
-    <script src="/app.js?v=20260809-review-fixes" defer></script>
+    <script src="/app.js?v=20260810-language-switch" defer></script>
   </body>
 </html>

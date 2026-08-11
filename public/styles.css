@@ -61,6 +61,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, pre:focus-vis
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
 }
 
+.auth-card-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+
 .eyebrow, .section-kicker {
   color: var(--accent);
   font-family: var(--mono);
@@ -138,7 +140,7 @@ h1 { font-size: 28px; letter-spacing: -0.04em; }
 .compact .brand-mark { width: 30px; height: 30px; border-radius: 9px; }
 .product-name { font-size: 14px; font-weight: 750; letter-spacing: -0.02em; }
 .product-subtitle { margin-top: 2px; color: var(--faint); font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; }
-.topbar-actions { display: flex; align-items: center; gap: 12px; }
+.topbar-actions { display: flex; align-items: center; gap: 10px; }
 .connection-status { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-family: var(--mono); font-size: 11px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px rgba(120, 201, 165, 0.1); }
 .connection-status[data-kind="loading"] .status-dot { background: var(--warning); }
@@ -151,6 +153,31 @@ h1 { font-size: 28px; letter-spacing: -0.04em; }
 .icon-button { width: 35px; height: 35px; border-radius: 9px; color: var(--muted); font-size: 20px; }
 .icon-button:hover, .ghost-button:hover, .shortcut-button:hover { border-color: var(--line-strong); color: var(--text); background: var(--surface-soft); }
 .ghost-button { padding: 7px 10px; border-radius: 8px; color: var(--muted); font-size: 12px; }
+.language-switch {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 1px;
+  height: 35px;
+  padding: 1px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(16, 17, 20, 0.72);
+}
+.language-button {
+  min-width: 29px;
+  height: 31px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 750;
+}
+.language-button:hover { color: var(--text); background: var(--surface-soft); }
+.language-button[aria-pressed="true"] { background: var(--accent); color: #231614; }
 
 .workspace { display: grid; min-height: calc(100dvh - 72px); grid-template-columns: 270px minmax(0, 1fr); }
 .session-rail { display: flex; min-height: 0; flex-direction: column; padding: 28px 16px 18px; border-right: 1px solid var(--line); background: rgba(23, 25, 30, 0.58); }
@@ -272,8 +299,12 @@ h1 { font-size: 28px; letter-spacing: -0.04em; }
 
 @media (max-width: 780px) {
   body.message-input-active .app-shell { padding-bottom: var(--keyboard-inset); }
-  .topbar { height: 62px; padding: 0 15px; }
+  .auth-card { padding: 30px 24px; }
+  .auth-card-toolbar .eyebrow { min-width: 0; }
+  .topbar { height: 62px; padding: 0 12px; }
+  .brand-lockup.compact { gap: 7px; }
   .product-subtitle, .ghost-button { display: none; }
+  .topbar-actions { gap: 7px; }
   .connection-status { font-size: 10px; }
   .mobile-switcher {
     position: sticky;

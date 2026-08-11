@@ -2,8 +2,8 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-08-09
-- Primary product surfaces: 手机浏览器中的 tmux/Codex 控制台、单机 Node 服务
+- Last refreshed: 2026-08-11
+- Primary product surfaces: 手机浏览器中的 tmux/Agent 控制台、单机 Node 服务
 - Evidence reviewed: 空仓库；运行环境中存在 tmux 3.4、Node 24，`leo_lab` 有 9 个 Codex pane
 
 ## Brand
@@ -12,7 +12,7 @@
 - Avoid: 伪装成完整远程桌面、过度装饰、把原始 shell 执行能力暴露给浏览器。
 
 ## Product goals
-- Goals: 手机选择 tmux session；查看其中的 Codex pane；读取最近终端内容；向当前 pane 发送文本和常用控制键；在网络波动时可恢复。
+- Goals: 手机选择 tmux session；查看其中的 Agent 或 shell pane；读取最近终端内容；向当前 pane 发送文本和常用控制键；在网络波动时可恢复；按用户选择提供完整中英文界面。
 - Non-goals: 文件浏览、任意 shell API、桌面级终端模拟、多人协作权限系统。
 - Success signals: 首屏可在几秒内选中 `leo_lab`；9 个 pane 可辨识；输入发送后能看到 Codex 响应；无令牌不能读取或修改 tmux。
 
@@ -42,22 +42,22 @@
 
 ## Components
 - Existing components to reuse: 无。
-- New/changed components: AuthGate、SessionRail、PaneStrip、PaneRenamer（任意 pane 独立显示名，单-pane window 同步 tmux 窗口名）、MobileQuickSwitcher（深色底部选择面板）、TerminalViewport、Composer（最多 10 个混合附件的可移除队列）、ConnectionBadge、Toast。
+- New/changed components: AuthGate、LanguageSwitcher（认证页和主工具栏共享“中 / EN”分段控件）、SessionRail、PaneStrip、PaneRenamer（任意 pane 独立显示名，单-pane window 同步 tmux 窗口名）、MobileQuickSwitcher（深色底部选择面板）、TerminalViewport、Composer（最多 10 个混合附件的可移除队列）、ConnectionBadge、Toast。
 - Variants and states: loading、selected、busy/标题 spinner、dead pane、empty、unauthorized、offline、附件待发送/上传中/部分无效。
-- Token/component ownership: `public/styles.css` 统一 CSS 变量；`public/app.js` 仅负责状态和 DOM 更新。
+- Token/component ownership: `public/styles.css` 统一 CSS 变量；`public/i18n.js` 统一中英文文案；`public/app.js` 负责状态和 DOM 更新。
 
 ## Accessibility
 - Target standard: WCAG 2.1 AA 的实用子集。
 - Keyboard/focus behavior: 令牌输入和消息输入可回车提交；移动端消息框随长文本增高或软键盘可视区变化时保持光标可见，输入聚焦期间终端轮询不抢夺页面滚动；按钮有可见 focus；MobileQuickSwitcher 支持方向键、Home/End、Escape 和选中项初始焦点；终端输出使用 `aria-live="polite"`，避免每次刷新抢焦点。
 - Interaction consistency: 重命名对话框绑定打开时的 Pane；附件允许同名同大小的不同文件共存，批量上传部分失败时复用已成功上传的附件，避免重复上传。
 - Contrast/readability: 输出与背景保持高对比；状态不能只依赖颜色。
-- Screen-reader semantics: 使用 `nav`、`main`、`section`、button 和明确 label。
+- Screen-reader semantics: 使用 `nav`、`main`、`section`、button 和明确 label；切换语言后同步更新 `<html lang>`、动态 ARIA 文案和 `aria-pressed` 状态。
 - Reduced motion and sensory considerations: 尊重 `prefers-reduced-motion`，不使用持续闪烁。
 
 ## Responsive behavior
 - Supported breakpoints/devices: 先支持 360px 以上手机和常见桌面浏览器。
-- Layout adaptations: 780px 以下 session 变为横向滚动条，pane 变为横向 chip；顶部保留 sticky 的 session / Pane 快速选择器，点击后打开统一的深色底部面板，避免原生系统弹窗破坏主题；输入区固定在终端底部附近。
-- Touch/hover differences: 触控区域至少约 44px；hover 只作补充，不承载关键操作。
+- Layout adaptations: 780px 以下 session 变为横向滚动条，pane 变为横向 chip；顶部保留 sticky 的 session / Pane 快速选择器和紧凑语言选择器，点击后打开统一的深色底部面板，避免原生系统弹窗破坏主题；输入区固定在终端底部附近。
+- Touch/hover differences: 主要操作触控区域至少约 44px；顶部 LanguageSwitcher 采用与 35px 刷新按钮同高的紧凑分段控件，保留清晰的 focus/active 状态；hover 只作补充，不承载关键操作。
 
 ## Interaction states
 - Loading: skeleton/文字状态，保留上一次输出。
@@ -68,9 +68,10 @@
 - Offline/slow network, if applicable: 轮询失败标记离线，恢复后自动继续；不伪造新输出。
 
 ## Content voice
-- Tone: 简短、直接、可信；中文界面，tmux/Codex 技术名保留原文。
-- Terminology: session 用“会话”，window 用“窗口”，pane 用“Pane”；不把 pane 强行称为“聊天”。
+- Tone: 简短、直接、可信；中英文文案语义保持一致，tmux、pane、Agent、zsh 等技术名保留原文。
+- Terminology: 中文中 session 用“会话”、window 用“窗口”、pane 用“Pane”；英文使用 session、window、pane；不把 pane 强行称为“聊天”。
 - Microcopy rules: 操作按钮使用动词；安全提示说明“只允许 tmux 目标和常用按键，不提供任意 shell API”。
+- Language behavior: 默认中文；用户选择保存到浏览器 `localStorage`；切换无需刷新，不重新请求会话，也不改变当前 session、pane、附件或输入内容。
 
 ## Implementation constraints
 - Framework/styling system: Node.js 内置 `http`/`child_process`/`fs`；无运行时依赖；原生 HTML/CSS/JS。

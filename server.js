@@ -131,11 +131,12 @@ const ALLOWED_KEYS = new Set([
 ]);
 
 class ApiError extends Error {
-  constructor(statusCode, message, publicMessage = message) {
+  constructor(statusCode, message, publicMessage = message, publicMessageEn = message) {
     super(message);
     this.name = 'ApiError';
     this.statusCode = statusCode;
     this.publicMessage = publicMessage;
+    this.publicMessageEn = publicMessageEn;
   }
 }
 
@@ -805,6 +806,7 @@ async function serveStatic(res, pathname) {
   const files = {
     '/': 'index.html',
     '/index.html': 'index.html',
+    '/i18n.js': 'i18n.js',
     '/app-helpers.js': 'app-helpers.js',
     '/app.js': 'app.js',
     '/styles.css': 'styles.css',
@@ -898,7 +900,11 @@ function createRemoteToolServer({
       }
 
       if (!authenticate(req, token)) {
-        sendJson(res, 401, { error: 'unauthorized', message: '需要访问令牌。' });
+        sendJson(res, 401, {
+          error: 'unauthorized',
+          message: '需要访问令牌。',
+          messageEn: 'An access token is required.',
+        });
         return;
       }
 
@@ -1058,16 +1064,25 @@ function createRemoteToolServer({
         }
       }
 
-      sendJson(res, 404, { error: 'not_found', message: '接口不存在。' });
+      sendJson(res, 404, {
+        error: 'not_found',
+        message: '接口不存在。',
+        messageEn: 'Endpoint not found.',
+      });
     } catch (error) {
       if (error instanceof ApiError) {
-        sendJson(res, error.statusCode, { error: error.name, message: error.publicMessage });
+        sendJson(res, error.statusCode, {
+          error: error.name,
+          message: error.publicMessage,
+          messageEn: error.publicMessageEn,
+        });
         return;
       }
       console.error('[tmux-relay]', error);
       sendJson(res, 500, {
         error: 'server_error',
         message: 'tmux 操作失败，请确认服务所在电脑上的 tmux 仍在运行。',
+        messageEn: 'The tmux operation failed. Make sure tmux is still running on the host computer.',
       });
     }
   });

@@ -50,8 +50,9 @@ async function listen(server) {
 }
 
 test('mobile composer keeps long input visible above the soft keyboard', async () => {
-  const [app, styles, html, manifest] = await Promise.all([
+  const [app, i18n, styles, html, manifest] = await Promise.all([
     fsp.readFile(path.join(__dirname, '..', 'public', 'app.js'), 'utf8'),
+    fsp.readFile(path.join(__dirname, '..', 'public', 'i18n.js'), 'utf8'),
     fsp.readFile(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8'),
     fsp.readFile(path.join(__dirname, '..', 'public', 'index.html'), 'utf8'),
     fsp.readFile(path.join(__dirname, '..', 'public', 'manifest.webmanifest'), 'utf8'),
@@ -62,8 +63,10 @@ test('mobile composer keeps long input visible above the soft keyboard', async (
   assert.match(app, /shouldAutoScrollTerminal\(\{/);
   assert.match(styles, /body\.message-input-active \.app-shell \{ padding-bottom: var\(--keyboard-inset\); \}/);
   assert.match(styles, /\.composer-form textarea \{[^}]*overflow-y: auto;/);
+  assert.match(html, /i18n\.js\?v=20260810-language-switch/);
   assert.match(html, /app-helpers\.js\?v=20260809-review-fixes/);
-  assert.match(html, /app\.js\?v=20260809-review-fixes/);
+  assert.match(html, /app\.js\?v=20260810-language-switch/);
+  assert.match(i18n, /PocketmuxI18n/);
   assert.equal((html.match(/\/favicon\.ico\?v=20260809-pocketmux-bmp/g) || []).length, 2);
   assert.match(html, /sizes="16x16 32x32 48x48"/);
   assert.equal((html.match(/\/assets\/pocketmux-icon-192\.png\?v=20260809-pocketmux/g) || []).length, 1);
@@ -71,6 +74,31 @@ test('mobile composer keeps long input visible above the soft keyboard', async (
   assert.match(styles, /\.brand-mark img \{/);
   assert.match(manifest, /"src": "\/assets\/pocketmux-icon-192\.png"/);
   assert.match(manifest, /"src": "\/assets\/pocketmux-icon-512\.png"/);
+});
+
+test('provides a persistent and accessible Chinese-English language switch', async () => {
+  const [app, html, styles] = await Promise.all([
+    fsp.readFile(path.join(__dirname, '..', 'public', 'app.js'), 'utf8'),
+    fsp.readFile(path.join(__dirname, '..', 'public', 'index.html'), 'utf8'),
+    fsp.readFile(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8'),
+  ]);
+
+  assert.match(html, /id="language-switch"/);
+  assert.match(html, /id="auth-language-switch"/);
+  assert.equal((html.match(/data-language="zh"/g) || []).length, 2);
+  assert.equal((html.match(/data-language="en"/g) || []).length, 2);
+  assert.match(html, /data-i18n-aria-label="language\.label"/);
+  assert.match(app, /localStorage\.getItem\(LANGUAGE_STORAGE_KEY\)/);
+  assert.match(app, /localStorage\.setItem\(LANGUAGE_STORAGE_KEY, state\.language\)/);
+  assert.match(app, /document\.documentElement\.lang = htmlLanguage\(state\.language\)/);
+  assert.match(app, /payload\.messageEn/);
+  assert.match(app, /state\.quickSwitchKind = kind/);
+  assert.match(app, /renderQuickSwitchHeading\(\)/);
+  assert.match(styles, /\.language-switch \{/);
+  assert.match(styles, /\.icon-button \{ width: 35px; height: 35px;/);
+  assert.match(styles, /\.language-switch \{[^}]*height: 35px;/);
+  assert.match(styles, /\.language-button \{[^}]*min-width: 29px;[^}]*height: 31px;/);
+  assert.match(html, /styles\.css\?v=20260811-compact-language-switch/);
 });
 
 test('serves the browser helper loaded by the main app', async (t) => {
@@ -83,6 +111,11 @@ test('serves the browser helper loaded by the main app', async (t) => {
   assert.equal(helper.status, 200);
   assert.match(helper.headers.get('content-type'), /^text\/javascript/);
   assert.match(await helper.text(), /PocketmuxAppHelpers/);
+
+  const i18n = await fetch(`${base}/i18n.js`);
+  assert.equal(i18n.status, 200);
+  assert.match(i18n.headers.get('content-type'), /^text\/javascript/);
+  assert.match(await i18n.text(), /PocketmuxI18n/);
 
   const icon = await fetch(`${base}/assets/pocketmux-icon.png`);
   assert.equal(icon.status, 200);
@@ -178,6 +211,7 @@ test('creates a named zsh window after the selected session last window', async 
     body: JSON.stringify({ paneId: '%1', name: '   ' }),
   });
   assert.equal(invalidName.status, 400);
+  assert.equal((await invalidName.json()).messageEn, 'Window name is empty');
   assert.equal(calls.length, callsBeforeInvalidName);
 
   const legacyRoute = await fetch(`${base}/api/panes`, {
@@ -431,6 +465,7 @@ test('protects APIs with a token and supports session/output/input flows', async
 
   const unauthorized = await fetch(`${base}/api/sessions`);
   assert.equal(unauthorized.status, 401);
+  assert.equal((await unauthorized.json()).messageEn, 'An access token is required.');
 
   const headers = { Authorization: 'Bearer test-token' };
   const sessions = await fetch(`${base}/api/sessions`, { headers });

@@ -2,6 +2,12 @@
 
 (() => {
   const {
+    LANGUAGE_STORAGE_KEY,
+    htmlLanguage,
+    normalizeLanguage,
+    translate,
+  } = window.PocketmuxI18n;
+  const {
     createAttachmentSelection,
     findPaneById,
     resolveAttachmentUploads,
@@ -9,6 +15,7 @@
   } = window.PocketmuxAppHelpers;
   const state = {
     token: localStorage.getItem('tmux-relay-token') || '',
+    language: normalizeLanguage(localStorage.getItem(LANGUAGE_STORAGE_KEY)),
     sessions: [],
     selectedSession: '',
     selectedPane: '',
@@ -25,6 +32,13 @@
     deletingWindow: false,
     zshSuggestion: null,
     selectedAttachments: [],
+    quickSwitchKind: '',
+    connectionKey: 'connection.connecting',
+    connectionKind: 'loading',
+    lastUpdatedAt: 0,
+    authErrorKey: '',
+    authErrorMessages: null,
+    toastDescriptor: null,
   };
 
   const TERMINAL_BOTTOM_THRESHOLD = 24;
@@ -110,6 +124,7 @@
     quickSwitchOptions: document.querySelector('#quick-switch-options'),
     closeQuickSwitch: document.querySelector('#close-quick-switch'),
     toast: document.querySelector('#toast'),
+    languageButtons: [...document.querySelectorAll('[data-language]')],
   };
 
   let toastTimer;
@@ -117,24 +132,135 @@
   let messageInputVisibilityFrame = 0;
   let messageInputVisibilityTimer = 0;
 
-  function showToast(message, kind = 'info') {
-    elements.toast.textContent = message;
+  function t(key, values) {
+    return translate(state.language, key, values);
+  }
+
+  function applyStaticTranslations() {
+    document.documentElement.lang = htmlLanguage(state.language);
+    document.querySelectorAll('[data-i18n]').forEach((node) => {
+      node.textContent = t(node.dataset.i18n);
+    });
+    document.querySelectorAll('[data-i18n-placeholder]').forEach((node) => {
+      node.placeholder = t(node.dataset.i18nPlaceholder);
+    });
+    document.querySelectorAll('[data-i18n-title]').forEach((node) => {
+      node.title = t(node.dataset.i18nTitle);
+    });
+    document.querySelectorAll('[data-i18n-aria-label]').forEach((node) => {
+      node.setAttribute('aria-label', t(node.dataset.i18nAriaLabel));
+    });
+    document.querySelectorAll('[data-i18n-content]').forEach((node) => {
+      node.setAttribute('content', t(node.dataset.i18nContent));
+    });
+    for (const button of elements.languageButtons) {
+      button.setAttribute('aria-pressed', String(button.dataset.language === state.language));
+    }
+  }
+
+  function renderConnection() {
+    const labelNode = elements.connectionStatus.querySelector('span:last-child');
+    labelNode.textContent = t(state.connectionKey);
+    elements.connectionStatus.dataset.kind = state.connectionKind;
+  }
+
+  function renderLastUpdated() {
+    if (!state.lastUpdatedAt) {
+      elements.lastUpdated.textContent = '—';
+      return;
+    }
+    const locale = state.language === 'en' ? 'en' : 'zh-CN';
+    const time = new Date(state.lastUpdatedAt).toLocaleTimeString(locale, {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    elements.lastUpdated.textContent = t('terminal.updatedAt', { time });
+  }
+
+  function applyLanguage() {
+    applyStaticTranslations();
+    renderConnection();
+    renderLastUpdated();
+    renderAuthError();
+    renderAll();
+    renderSelectedAttachments();
+    renderQuickSwitchHeading();
+    renderToast();
+  }
+
+  function setLanguage(language) {
+    const nextLanguage = normalizeLanguage(language);
+    if (nextLanguage === state.language) return;
+    state.language = nextLanguage;
+    localStorage.setItem(LANGUAGE_STORAGE_KEY, state.language);
+    applyLanguage();
+  }
+
+  function renderToast() {
+    const descriptor = state.toastDescriptor;
+    if (!descriptor) return;
+    if (descriptor.key) {
+      elements.toast.textContent = t(descriptor.key, descriptor.values);
+    } else if (descriptor.messages) {
+      elements.toast.textContent = descriptor.messages[state.language] || descriptor.messages.zh || '';
+    } else {
+      elements.toast.textContent = descriptor.message || '';
+    }
+  }
+
+  function activateToast(descriptor, kind = 'info') {
+    state.toastDescriptor = descriptor;
+    renderToast();
     elements.toast.dataset.kind = kind;
     elements.toast.classList.add('visible');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => elements.toast.classList.remove('visible'), 3200);
+    toastTimer = setTimeout(() => {
+      elements.toast.classList.remove('visible');
+      state.toastDescriptor = null;
+    }, 3200);
   }
 
-  function setConnection(label, kind = 'online') {
-    const labelNode = elements.connectionStatus.querySelector('span:last-child');
-    labelNode.textContent = label;
-    elements.connectionStatus.dataset.kind = kind;
+  function showToast(message, kind = 'info') {
+    activateToast({ message }, kind);
   }
 
-  function showAuth(errorMessage = '') {
+  function showTranslatedToast(key, kind = 'info', values = {}) {
+    activateToast({ key, values }, kind);
+  }
+
+  function showErrorToast(error) {
+    if (error.localizedMessages) activateToast({ messages: error.localizedMessages }, 'error');
+    else showToast(error.message, 'error');
+  }
+
+  function responseError(payload, status, fallbackKey) {
+    const localizedMessages = {
+      zh: payload.message || translate('zh', fallbackKey, { status }),
+      en: payload.messageEn || translate('en', fallbackKey, { status }),
+    };
+    const error = new Error(localizedMessages[state.language]);
+    error.localizedMessages = localizedMessages;
+    error.status = status;
+    return error;
+  }
+
+  function setConnection(key, kind = 'online') {
+    state.connectionKey = key;
+    state.connectionKind = kind;
+    renderConnection();
+  }
+
+  function renderAuthError() {
+    elements.authError.textContent = state.authErrorKey
+      ? t(state.authErrorKey)
+      : state.authErrorMessages?.[state.language] || '';
+  }
+
+  function showAuth() {
     elements.authGate.classList.remove('is-hidden');
     elements.appShell.classList.add('is-hidden');
-    elements.authError.textContent = errorMessage;
+    renderAuthError();
     elements.tokenInput.value = state.token;
     setTimeout(() => elements.tokenInput.focus(), 0);
   }
@@ -150,6 +276,8 @@
     state.sessions = [];
     state.selectedSession = '';
     state.selectedPane = '';
+    state.authErrorKey = '';
+    state.authErrorMessages = null;
     localStorage.removeItem('tmux-relay-token');
     showAuth();
   }
@@ -169,15 +297,12 @@
       payload = {};
     }
     if (response.status === 401) {
-      const error = new Error(payload.message || '令牌无效。');
+      const error = responseError(payload, response.status, 'error.invalidToken');
       error.unauthorized = true;
-      error.status = response.status;
       throw error;
     }
     if (!response.ok) {
-      const error = new Error(payload.message || `请求失败（${response.status}）`);
-      error.status = response.status;
-      throw error;
+      throw responseError(payload, response.status, 'error.requestFailed');
     }
     return payload;
   }
@@ -201,15 +326,12 @@
       payload = {};
     }
     if (response.status === 401) {
-      const error = new Error(payload.message || '令牌无效。');
+      const error = responseError(payload, response.status, 'error.invalidToken');
       error.unauthorized = true;
-      error.status = response.status;
       throw error;
     }
     if (!response.ok) {
-      const error = new Error(payload.message || `附件上传失败（${response.status}）`);
-      error.status = response.status;
-      throw error;
+      throw responseError(payload, response.status, 'error.uploadFailed');
     }
     return payload;
   }
@@ -278,7 +400,9 @@
       if (attachment.url) {
         const image = makeElement('img', 'attachment-thumbnail');
         image.src = attachment.url;
-        image.alt = `${attachment.file.name || '图片'}预览`;
+        image.alt = t('attachment.imagePreview', {
+          name: attachment.file.name || t('attachment.imageFallback'),
+        });
         visual.append(image);
       } else {
         const icon = makeElement('span', 'attachment-file-icon', fileExtension(attachment.file).toUpperCase().slice(0, 4) || 'FILE');
@@ -287,12 +411,12 @@
       }
 
       const details = makeElement('div', 'attachment-details');
-      details.append(makeElement('strong', '', attachment.file.name || '已选择附件'));
+      details.append(makeElement('strong', '', attachment.file.name || t('attachment.selectedFallback')));
       const removeButton = makeElement('button', 'remove-attachment', '×');
       removeButton.type = 'button';
       removeButton.disabled = state.sending;
-      removeButton.setAttribute('aria-label', `移除附件 ${attachment.file.name || ''}`.trim());
-      removeButton.title = '移除附件';
+      removeButton.setAttribute('aria-label', t('attachment.removeAria', { name: attachment.file.name || '' }).trim());
+      removeButton.title = t('attachment.removeTitle');
       removeButton.addEventListener('click', () => removeSelectedAttachment(attachment.clientId));
       row.append(visual, details, removeButton);
       elements.attachmentList.append(row);
@@ -331,22 +455,22 @@
 
     for (const file of files) {
       if (state.selectedAttachments.length + additions.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
-        rejected.push(`每条消息最多添加 ${MAX_ATTACHMENTS_PER_MESSAGE} 个附件。`);
+        rejected.push({ key: 'attachment.tooMany', values: { count: MAX_ATTACHMENTS_PER_MESSAGE } });
         continue;
       }
 
       const image = isImageAttachment(file);
       const maxBytes = image ? MAX_IMAGE_BYTES : MAX_ATTACHMENT_BYTES;
       if (file.size > maxBytes) {
-        rejected.push(image ? '图片不能超过 10 MB。' : '单个附件不能超过 25 MB。');
+        rejected.push({ key: image ? 'attachment.imageTooLarge' : 'attachment.fileTooLarge' });
         continue;
       }
       if (!isSupportedAttachment(file)) {
-        rejected.push('部分文件格式不受支持。');
+        rejected.push({ key: 'attachment.unsupported' });
         continue;
       }
       if (combinedBytes + file.size > MAX_COMBINED_ATTACHMENT_BYTES) {
-        rejected.push('每条消息的附件总大小不能超过 50 MB。');
+        rejected.push({ key: 'attachment.totalTooLarge' });
         continue;
       }
 
@@ -360,8 +484,11 @@
 
     state.selectedAttachments.push(...additions);
     renderSelectedAttachments();
-    if (rejected.length > 0) showToast(rejected[0], 'error');
-    else if (additions.length > 0) showToast(`已添加 ${additions.length} 个附件`, 'success');
+    if (rejected.length > 0) {
+      showTranslatedToast(rejected[0].key, 'error', rejected[0].values);
+    } else if (additions.length > 0) {
+      showTranslatedToast('attachment.added', 'success', { count: additions.length });
+    }
     elements.messageInput.focus();
   }
 
@@ -541,23 +668,23 @@
       elements.zshCompleteButton.classList.toggle('is-hidden', !zsh);
       elements.zshCompleteButton.disabled = !canComplete || state.sending;
       elements.zshCompleteButton.textContent = suggestionAccepted
-        ? '执行 Enter'
+        ? t('zsh.executeEnter')
         : suggestionReady
-          ? '接受 →'
-          : '显示补全';
+          ? t('zsh.acceptCompletion')
+          : t('zsh.showCompletion');
       elements.zshCompleteButton.setAttribute(
         'aria-label',
         suggestionAccepted
-          ? '执行已接受的 zsh 命令'
+          ? t('zsh.executeAria')
           : suggestionReady
-            ? '接受 zsh 补全建议'
-            : '显示 zsh 补全建议',
+            ? t('zsh.acceptCompletionAria')
+            : t('zsh.showCompletionAria'),
       );
       elements.zshCompleteButton.title = suggestionReady
-        ? '发送 Right 接受当前 zsh 补全建议'
+        ? t('zsh.acceptCompletionTitle')
         : suggestionAccepted
-          ? '发送 Enter 执行当前命令'
-          : '先显示 zsh 的灰色补全建议，不会执行命令';
+          ? t('zsh.executeTitle')
+          : t('zsh.showCompletionTitle');
     }
     elements.sendButton.disabled = !pane || state.sending;
     elements.attachmentInput.disabled = state.sending;
@@ -566,8 +693,8 @@
       button.disabled = state.sending;
     });
     elements.messageInput.placeholder = zsh
-      ? '输入命令…（补全后接受，再点击 Enter 执行）'
-      : '给当前 pane 发送消息…（Enter 发送，Shift+Enter 换行）';
+      ? t('composer.zshPlaceholder')
+      : t('composer.messagePlaceholder');
   }
 
   function makeElement(tagName, className, text) {
@@ -582,7 +709,10 @@
     elements.sessionCount.textContent = String(state.sessions.length);
     if (state.sessions.length === 0) {
       const empty = makeElement('div', 'list-empty');
-      empty.append(makeElement('strong', '', '没有发现 tmux 会话'), makeElement('span', '', '请确认服务与 tmux 使用的是同一个系统用户。'));
+      empty.append(
+        makeElement('strong', '', t('sessions.emptyTitle')),
+        makeElement('span', '', t('sessions.emptyDetail')),
+      );
       elements.sessionList.append(empty);
       return;
     }
@@ -596,8 +726,11 @@
       const icon = makeElement('span', 'session-icon', '◌');
       const content = makeElement('span', 'session-item-content');
       content.append(makeElement('strong', 'session-name', session.name));
-      content.append(makeElement('span', 'session-detail', `${session.codexCount} Codex · ${session.paneCount} pane`));
-      const marker = makeElement('span', 'session-marker', session.attached ? '在用' : '');
+      content.append(makeElement('span', 'session-detail', t('sessions.detail', {
+        codex: session.codexCount,
+        panes: session.paneCount,
+      })));
+      const marker = makeElement('span', 'session-marker', session.attached ? t('sessions.attached') : '');
       button.append(icon, content, marker);
       button.addEventListener('click', () => selectSession(session.name));
       elements.sessionList.append(button);
@@ -608,18 +741,24 @@
     const session = selectedSession();
     elements.paneList.replaceChildren();
     if (!session) {
-      elements.currentSessionName.textContent = '等待选择';
+      elements.currentSessionName.textContent = t('current.waiting');
       elements.sessionMeta.textContent = '—';
-      elements.paneCount.textContent = '0 个 pane';
-      elements.paneList.append(makeElement('div', 'pane-empty', '从左侧选择一个 tmux 会话。'));
+      elements.paneCount.textContent = t('panes.zeroCount');
+      elements.paneList.append(makeElement('div', 'pane-empty', t('panes.selectSession')));
       return;
     }
 
     elements.currentSessionName.textContent = session.name;
-    elements.sessionMeta.textContent = `${session.attached ? 'attached' : 'detached'} · ${session.windows} 个 window`;
-    elements.paneCount.textContent = `${session.paneCount} 个 pane · ${session.codexCount} 个 Codex`;
+    elements.sessionMeta.textContent = t('panes.sessionMeta', {
+      state: t(session.attached ? 'sessions.stateAttached' : 'sessions.stateDetached'),
+      windows: session.windows,
+    });
+    elements.paneCount.textContent = t('panes.count', {
+      panes: session.paneCount,
+      codex: session.codexCount,
+    });
     if (session.panes.length === 0) {
-      elements.paneList.append(makeElement('div', 'pane-empty', '这个会话当前没有可用 pane。'));
+      elements.paneList.append(makeElement('div', 'pane-empty', t('panes.empty')));
       return;
     }
 
@@ -631,8 +770,12 @@
       if (pane.id === state.selectedPane) button.classList.add('selected');
       if (pane.dead) button.classList.add('dead');
       const top = makeElement('span', 'pane-item-top');
-      const name = makeElement('strong', 'pane-name', pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`);
-      const stateLabel = makeElement('span', 'pane-state', pane.dead ? '已退出' : pane.busy ? '运行中' : '就绪');
+      const name = makeElement('strong', 'pane-name', paneDisplayName(pane));
+      const stateLabel = makeElement(
+        'span',
+        'pane-state',
+        t(pane.dead ? 'panes.exited' : pane.busy ? 'panes.running' : 'panes.ready'),
+      );
       top.append(name, stateLabel);
       const sub = makeElement('span', 'pane-subtitle', pane.title || pane.currentCommand || pane.id);
       button.append(top, sub);
@@ -644,14 +787,14 @@
   function renderTerminalMeta() {
     const pane = selectedPane();
     if (!pane) {
-      elements.currentPaneMeta.textContent = '未选择 pane';
+      elements.currentPaneMeta.textContent = t('terminal.noPane');
       elements.terminalEmpty.classList.remove('is-hidden');
       elements.terminalOutput.classList.add('is-empty');
       renderComposerState();
       return;
     }
-    const paneName = pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`;
-    elements.currentPaneMeta.textContent = `${paneName} · ${pane.title || pane.currentCommand || 'tmux pane'} · ${pane.id}`;
+    const paneName = paneDisplayName(pane);
+    elements.currentPaneMeta.textContent = `${paneName} · ${pane.title || pane.currentCommand || t('terminal.paneFallback')} · ${pane.id}`;
     elements.terminalEmpty.classList.toggle('is-hidden', Boolean(state.output));
     elements.terminalOutput.classList.toggle('is-empty', !state.output);
     renderComposerState();
@@ -664,27 +807,41 @@
 
     return (selectedSession()?.panes || []).map((pane) => ({
       value: pane.id,
-      label: pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`,
+      label: paneDisplayName(pane),
     }));
+  }
+
+  function paneDisplayName(pane) {
+    return pane.pocketmuxName || pane.windowName || t('panes.windowFallback', { index: pane.windowIndex });
   }
 
   function renderQuickSwitcher() {
     const session = selectedSession();
     const pane = selectedPane();
-    const sessionLabel = session?.name || '暂无会话';
+    const sessionLabel = session?.name || t('switcher.noSession');
     const paneLabel = pane
-      ? pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`
-      : '暂无 Pane';
+      ? paneDisplayName(pane)
+      : t('switcher.noPane');
 
     elements.quickSessionValue.textContent = sessionLabel;
     elements.quickPaneValue.textContent = paneLabel;
     elements.quickSessionButton.disabled = state.sessions.length === 0;
     elements.quickPaneButton.disabled = !session || session.panes.length === 0;
-    elements.quickSessionButton.setAttribute('aria-label', `快速切换 tmux 会话，当前：${sessionLabel}`);
-    elements.quickPaneButton.setAttribute('aria-label', `快速切换当前会话的 Pane，当前：${paneLabel}`);
+    elements.quickSessionButton.setAttribute('aria-label', t('switcher.currentSessionAria', { label: sessionLabel }));
+    elements.quickPaneButton.setAttribute('aria-label', t('switcher.currentPaneAria', { label: paneLabel }));
+  }
+
+  function renderQuickSwitchHeading() {
+    const key = state.quickSwitchKind === 'session'
+      ? 'switcher.chooseSession'
+      : state.quickSwitchKind === 'pane'
+        ? 'switcher.chooseWindow'
+        : 'switcher.choose';
+    elements.quickSwitchHeading.textContent = t(key);
   }
 
   function resetQuickSwitcherState() {
+    state.quickSwitchKind = '';
     document.body.classList.remove('quick-switch-open');
     elements.quickSessionButton.setAttribute('aria-expanded', 'false');
     elements.quickPaneButton.setAttribute('aria-expanded', 'false');
@@ -707,7 +864,8 @@
     if (!dialog || items.length === 0) return;
 
     const selectedValue = kind === 'session' ? state.selectedSession : state.selectedPane;
-    elements.quickSwitchHeading.textContent = kind === 'session' ? '选择会话' : '选择窗口';
+    state.quickSwitchKind = kind;
+    renderQuickSwitchHeading();
     elements.quickSwitchOptions.replaceChildren();
 
     let initialOption = null;
@@ -775,7 +933,7 @@
     if (state.refreshPromise) return state.refreshPromise;
     const refreshPromise = (async () => {
       state.refreshing = true;
-      if (!quiet) setConnection('同步中', 'loading');
+      if (!quiet) setConnection('connection.syncing', 'loading');
       try {
         const payload = await api('/api/sessions');
         state.sessions = payload.sessions || [];
@@ -794,7 +952,7 @@
           state.output = '';
         }
         renderAll();
-        setConnection('已连接', 'online');
+        setConnection('connection.online', 'online');
         if (state.selectedPane && (!quiet || selectionChanged)) {
           await loadOutput({ quiet: true, forceScrollBottom: selectionChanged });
         }
@@ -802,8 +960,8 @@
         if (error.unauthorized) {
           forgetToken();
         } else {
-          setConnection('离线', 'offline');
-          if (!quiet) showToast(error.message, 'error');
+          setConnection('connection.offline', 'offline');
+          if (!quiet) showErrorToast(error);
         }
       } finally {
         state.refreshing = false;
@@ -838,15 +996,16 @@
       state.output = payload.output || '';
       elements.terminalOutput.textContent = state.output;
       renderTerminalMeta();
-      elements.lastUpdated.textContent = `更新于 ${new Date(payload.now || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+      state.lastUpdatedAt = payload.now || Date.now();
+      renderLastUpdated();
       if (shouldScrollToBottom) scheduleScrollTerminalToBottom();
-      setConnection('已连接', 'online');
+      setConnection('connection.online', 'online');
     } catch (error) {
       if (error.unauthorized) {
         forgetToken();
       } else if (!quiet) {
-        setConnection('输出读取失败', 'offline');
-        showToast(error.message, 'error');
+        setConnection('connection.outputFailed', 'offline');
+        showErrorToast(error);
       }
     } finally {
       state.polling = false;
@@ -881,7 +1040,7 @@
   function openNewWindowDialog() {
     const pane = selectedPane();
     if (!pane || pane.dead) {
-      showToast('请先选择一个可用的 pane。', 'error');
+      showTranslatedToast('validation.selectAvailablePane', 'error');
       return;
     }
     if (!elements.newWindowDialog || !elements.newWindowName) return;
@@ -909,12 +1068,12 @@
     const name = elements.newWindowName.value.trim();
     if (!target || target.dead) {
       closeNewWindowDialog();
-      showToast('请先选择一个可用的 pane。', 'error');
+      showTranslatedToast('validation.selectAvailablePane', 'error');
       return;
     }
     if (!name) {
       elements.newWindowName.focus();
-      showToast('请输入窗口名称。', 'error');
+      showTranslatedToast('validation.windowName', 'error');
       return;
     }
 
@@ -932,10 +1091,10 @@
       closeNewWindowDialog();
       renderAll();
       await loadOutput({ quiet: true, forceScrollBottom: true });
-      showToast(`zsh 窗口「${payload.name || name}」已创建`, 'success');
+      showTranslatedToast('window.created', 'success', { name: payload.name || name });
     } catch (error) {
       if (error.unauthorized) forgetToken();
-      else showToast(error.message, 'error');
+      else showErrorToast(error);
     } finally {
       state.creatingWindow = false;
       renderComposerState();
@@ -946,11 +1105,11 @@
   function openRenameWindowDialog() {
     const pane = selectedPane();
     if (!pane) {
-      showToast('请先选择一个 pane。', 'error');
+      showTranslatedToast('validation.selectPane', 'error');
       return;
     }
     state.renameTargetPaneId = pane.id;
-    const currentName = pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`;
+    const currentName = paneDisplayName(pane);
     elements.renameWindowName.value = currentName;
     if (typeof elements.renameWindowDialog.showModal === 'function') {
       elements.renameWindowDialog.showModal();
@@ -979,16 +1138,16 @@
     const name = elements.renameWindowName.value.trim();
     if (!pane) {
       closeRenameWindowDialog();
-      showToast('要重命名的 Pane 已不存在。', 'error');
+      showTranslatedToast('window.renameMissing', 'error');
       return;
     }
     if (!name) {
       elements.renameWindowName.focus();
-      showToast('请输入名称。', 'error');
+      showTranslatedToast('validation.name', 'error');
       return;
     }
 
-    const previousName = pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`;
+    const previousName = paneDisplayName(pane);
     if (name === previousName) {
       closeRenameWindowDialog();
       return;
@@ -1003,10 +1162,13 @@
       });
       await refreshSessions({ quiet: true });
       closeRenameWindowDialog();
-      showToast(`「${previousName}」已重命名为「${payload.name || name}」`, 'success');
+      showTranslatedToast('window.renamed', 'success', {
+        previous: previousName,
+        name: payload.name || name,
+      });
     } catch (error) {
       if (error.unauthorized) forgetToken();
-      else showToast(error.message, 'error');
+      else showErrorToast(error);
     } finally {
       state.renamingWindow = false;
       renderAll();
@@ -1019,9 +1181,9 @@
     const pane = selectedPane();
     if (!pane || pane.dead) return;
 
-    const windowLabel = pane.pocketmuxName || pane.windowName || `window ${pane.windowIndex}`;
+    const windowLabel = paneDisplayName(pane);
     if (typeof window.confirm === 'function'
-      && !window.confirm(`确定删除窗口「${windowLabel}」吗？窗口中的进程也会被终止。`)) {
+      && !window.confirm(t('window.deleteConfirm', { name: windowLabel }))) {
       return;
     }
 
@@ -1032,10 +1194,10 @@
       await api(`/api/windows/${encodeURIComponent(pane.id)}`, { method: 'DELETE' });
       state.output = '';
       await refreshSessions({ quiet: true });
-      showToast(`窗口「${windowLabel}」已删除`, 'success');
+      showTranslatedToast('window.deleted', 'success', { name: windowLabel });
     } catch (error) {
       if (error.unauthorized) forgetToken();
-      else showToast(error.message, 'error');
+      else showErrorToast(error);
     } finally {
       state.deletingWindow = false;
       renderAll();
@@ -1048,14 +1210,14 @@
     const pane = selectedPane();
     if (!isZshPane(pane)) return;
     if (state.selectedAttachments.length > 0) {
-      showToast('zsh 补全不支持附件，请先移除附件。', 'error');
+      showTranslatedToast('zsh.attachmentsUnsupported', 'error');
       return;
     }
 
     const paneId = state.selectedPane;
     const text = elements.messageInput.value;
     if (!isCompletableZshText(text)) {
-      showToast('请输入单行命令片段后再补全。', 'error');
+      showTranslatedToast('zsh.enterFragment', 'error');
       return;
     }
     state.sending = true;
@@ -1068,7 +1230,7 @@
           body: { text },
         });
         state.zshSuggestion = { paneId, text, phase: 'previewed' };
-        showToast('补全建议已显示，请确认后点击“接受 →”。', 'success');
+        showTranslatedToast('zsh.previewed', 'success');
         if (state.selectedPane === paneId) {
           await loadOutput({ quiet: true, forceScrollBottom: true });
         }
@@ -1078,7 +1240,7 @@
           body: { key: 'Right' },
         });
         state.zshSuggestion = { ...suggestion, phase: 'accepted' };
-        showToast('zsh 补全已接受，请点击“执行 Enter”运行。', 'success');
+        showTranslatedToast('zsh.accepted', 'success');
         if (state.selectedPane === paneId) {
           await loadOutput({ quiet: true, forceScrollBottom: true });
         }
@@ -1090,14 +1252,14 @@
         state.zshSuggestion = null;
         elements.messageInput.value = '';
         elements.messageInput.style.height = 'auto';
-        showToast('zsh 命令已执行', 'success');
+        showTranslatedToast('zsh.executed', 'success');
         if (state.selectedPane === paneId) {
           await loadOutput({ quiet: true, forceScrollBottom: true });
         }
       }
     } catch (error) {
       if (error.unauthorized) forgetToken();
-      else showToast(error.message, 'error');
+      else showErrorToast(error);
     } finally {
       state.sending = false;
       renderComposerState();
@@ -1107,7 +1269,7 @@
 
   async function sendKey(key) {
     if (!state.selectedPane) {
-      showToast('请先选择一个 pane。', 'error');
+      showTranslatedToast('validation.selectPane', 'error');
       return;
     }
     const paneId = state.selectedPane;
@@ -1122,14 +1284,14 @@
       if (executeAcceptedZsh) {
         elements.messageInput.value = '';
         elements.messageInput.style.height = 'auto';
-        showToast('zsh 命令已执行', 'success');
+        showTranslatedToast('zsh.executed', 'success');
       } else {
-        showToast(`${key} 已发送`, 'success');
+        showTranslatedToast('key.sent', 'success', { key });
       }
       await loadOutput({ quiet: true });
     } catch (error) {
       if (error.unauthorized) forgetToken();
-      else showToast(error.message, 'error');
+      else showErrorToast(error);
     }
   }
 
@@ -1140,7 +1302,7 @@
     const messageAttachments = [...state.selectedAttachments];
     const hasAttachments = messageAttachments.length > 0;
     if (!state.selectedPane) {
-      showToast('请先选择一个 pane。', 'error');
+      showTranslatedToast('validation.selectPane', 'error');
       return;
     }
     const pane = selectedPane();
@@ -1159,13 +1321,13 @@
         state.zshSuggestion = null;
         elements.messageInput.value = '';
         elements.messageInput.style.height = 'auto';
-        showToast('zsh 命令已执行', 'success');
+        showTranslatedToast('zsh.executed', 'success');
         if (state.selectedPane === paneId) {
           await loadOutput({ quiet: true, forceScrollBottom: true });
         }
       } catch (error) {
         if (error.unauthorized) forgetToken();
-        else showToast(error.message, 'error');
+        else showErrorToast(error);
       } finally {
         state.sending = false;
         renderComposerState();
@@ -1181,7 +1343,7 @@
     try {
       let attachmentIds = [];
       if (hasAttachments) {
-        showToast(`正在上传 ${messageAttachments.length} 个附件…`);
+        showTranslatedToast('attachment.uploading', 'info', { count: messageAttachments.length });
         const uploads = await resolveAttachmentUploads(messageAttachments, uploadAttachment);
         attachmentIds = uploads.map((upload) => upload.attachmentId);
       }
@@ -1192,14 +1354,14 @@
       elements.messageInput.value = '';
       elements.messageInput.style.height = 'auto';
       clearSelectedAttachments();
-      showToast('消息已发送', 'success');
+      showTranslatedToast('message.sent', 'success');
       if (state.selectedPane === paneId) await loadOutput({ quiet: true });
     } catch (error) {
       if (error.status === 404) {
         messageAttachments.forEach((attachment) => { attachment.upload = null; });
       }
       if (error.unauthorized) forgetToken();
-      else showToast(error.message, 'error');
+      else showErrorToast(error);
     } finally {
       state.sending = false;
       renderComposerState();
@@ -1210,7 +1372,9 @@
   async function unlock(token) {
     state.token = token.trim();
     if (!state.token) return;
-    elements.authError.textContent = '';
+    state.authErrorKey = '';
+    state.authErrorMessages = null;
+    renderAuthError();
     try {
       await api('/api/health');
       localStorage.setItem('tmux-relay-token', state.token);
@@ -1219,7 +1383,11 @@
     } catch (error) {
       state.token = '';
       if (error.unauthorized) localStorage.removeItem('tmux-relay-token');
-      elements.authError.textContent = error.unauthorized ? '令牌无效，请重新粘贴。' : error.message;
+      state.authErrorKey = error.unauthorized ? 'auth.invalidToken' : '';
+      state.authErrorMessages = error.unauthorized
+        ? null
+        : error.localizedMessages || { zh: error.message, en: error.message };
+      renderAuthError();
     }
   }
 
@@ -1272,7 +1440,11 @@
   document.querySelectorAll('[data-key]').forEach((button) => {
     button.addEventListener('click', () => sendKey(button.dataset.key));
   });
+  elements.languageButtons.forEach((button) => {
+    button.addEventListener('click', () => setLanguage(button.dataset.language));
+  });
 
+  applyLanguage();
   const queryToken = new URLSearchParams(window.location.search).get('token');
   if (queryToken) {
     window.history.replaceState({}, document.title, window.location.pathname);

@@ -11,6 +11,38 @@ const {
   resolveAttachmentUploads,
   shouldAutoScrollTerminal,
 } = require('../public/app-helpers');
+const {
+  catalogs,
+  htmlLanguage,
+  normalizeLanguage,
+  translate,
+} = require('../public/i18n');
+
+test('keeps Chinese and English translation catalogs complete and aligned', () => {
+  assert.deepEqual(Object.keys(catalogs.en).sort(), Object.keys(catalogs.zh).sort());
+  assert.ok(Object.keys(catalogs.zh).length >= 100);
+});
+
+test('defaults unsupported or missing language preferences to Chinese', () => {
+  assert.equal(normalizeLanguage(null), 'zh');
+  assert.equal(normalizeLanguage('fr'), 'zh');
+  assert.equal(normalizeLanguage('en'), 'en');
+  assert.equal(htmlLanguage('zh'), 'zh-CN');
+  assert.equal(htmlLanguage('en'), 'en');
+});
+
+test('translates static and dynamic UI messages in both languages', () => {
+  assert.equal(translate('zh', 'action.logout'), '退出');
+  assert.equal(translate('en', 'action.logout'), 'Log out');
+  assert.equal(translate('zh', 'sessions.emptyTitle'), '没有发现 tmux 会话');
+  assert.equal(translate('en', 'sessions.emptyTitle'), 'No tmux sessions found');
+  assert.equal(translate('zh', 'attachment.added', { count: 2 }), '已添加 2 个附件');
+  assert.equal(translate('en', 'attachment.added', { count: 2 }), 'Added 2 attachments');
+  assert.equal(
+    translate('en', 'panes.count', { panes: 2, codex: 1 }),
+    '2 panes · 1 Codex',
+  );
+});
 
 test('only pauses terminal auto-follow for a focused mobile composer', () => {
   assert.equal(shouldAutoScrollTerminal({
@@ -83,4 +115,5 @@ test('client wiring uses the reviewed helpers and no metadata deduplication key'
   assert.match(source, /findPaneById\(state\.sessions, state\.renameTargetPaneId\)/);
   assert.match(source, /resolveAttachmentUploads\(messageAttachments, uploadAttachment\)/);
   assert.doesNotMatch(source, /attachmentSelectionKey|selectedKeys/);
+  assert.doesNotMatch(source, /[\u4e00-\u9fff]/, 'dynamic UI copy belongs in the translation catalog');
 });
