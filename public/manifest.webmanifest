@@ -1,23 +1,29 @@
 {
   "name": "pocketmux",
   "short_name": "pocketmux",
-  "start_url": "/",
+  "start_url": ".",
   "display": "standalone",
   "background_color": "#111317",
   "theme_color": "#111317",
   "description": "Phone-friendly tmux and Codex console",
   "icons": [
     {
-      "src": "/assets/pocketmux-icon-192.png",
+      "src": "./assets/pocketmux-icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/assets/pocketmux-icon-512.png",
+      "src": "./assets/pocketmux-icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
+    },
+    {
+      "src": "./assets/pocketmux-icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

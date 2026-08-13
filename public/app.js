@@ -1,6 +1,9 @@
 'use strict';
 
 (() => {
+  const bootstrapParams = new URLSearchParams(window.location.search);
+  const queryToken = bootstrapParams.get('token');
+  const nativeBootstrap = bootstrapParams.get('native') === '1';
   const {
     LANGUAGE_STORAGE_KEY,
     htmlLanguage,
@@ -10,11 +13,12 @@
   const {
     createAttachmentSelection,
     findPaneById,
+    resolveAppUrl,
     resolveAttachmentUploads,
     shouldAutoScrollTerminal,
   } = window.PocketmuxAppHelpers;
   const state = {
-    token: localStorage.getItem('tmux-relay-token') || '',
+    token: nativeBootstrap ? '' : (localStorage.getItem('tmux-relay-token') || ''),
     language: normalizeLanguage(localStorage.getItem(LANGUAGE_STORAGE_KEY)),
     sessions: [],
     selectedSession: '',
@@ -43,6 +47,8 @@
 
   const TERMINAL_BOTTOM_THRESHOLD = 24;
   const MESSAGE_INPUT_MAX_HEIGHT = 140;
+  const NATIVE_LANGUAGE_MESSAGE_TYPE = 'pocketmux:language';
+  const NATIVE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required';
   const MESSAGE_INPUT_VIEWPORT_MARGIN = 12;
   const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
   const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -187,6 +193,22 @@
     renderSelectedAttachments();
     renderQuickSwitchHeading();
     renderToast();
+    publishLanguageToNativeShell();
+  }
+
+  function publishLanguageToNativeShell() {
+    if (window.parent === window) return;
+    window.parent.postMessage({
+      type: NATIVE_LANGUAGE_MESSAGE_TYPE,
+      language: state.language,
+    }, '*');
+  }
+
+  function publishAuthenticationRequiredToNativeShell() {
+    if (!nativeBootstrap || window.parent === window) return;
+    window.parent.postMessage({
+      type: NATIVE_AUTH_REQUIRED_MESSAGE_TYPE,
+    }, '*');
   }
 
   function setLanguage(language) {
@@ -278,8 +300,14 @@
     state.selectedPane = '';
     state.authErrorKey = '';
     state.authErrorMessages = null;
-    localStorage.removeItem('tmux-relay-token');
+    if (!nativeBootstrap) localStorage.removeItem('tmux-relay-token');
+    publishAuthenticationRequiredToNativeShell();
     showAuth();
+  }
+
+  function isPocketmuxApiResponse(response) {
+    return response.headers.get('X-Pocketmux-Product') === 'pocketmux'
+      && response.headers.get('X-Pocketmux-Protocol-Version') === '1';
   }
 
   async function api(path, options = {}) {
@@ -289,14 +317,14 @@
       headers.set('Content-Type', 'application/json');
       options.body = JSON.stringify(options.body);
     }
-    const response = await fetch(path, { ...options, headers });
+    const response = await fetch(resolveAppUrl(path, window.location.href), { ...options, headers });
     let payload = {};
     try {
       payload = await response.json();
     } catch {
       payload = {};
     }
-    if (response.status === 401) {
+    if (response.status === 401 && isPocketmuxApiResponse(response)) {
       const error = responseError(payload, response.status, 'error.invalidToken');
       error.unauthorized = true;
       throw error;
@@ -314,7 +342,7 @@
       'Content-Type': contentType || 'application/octet-stream',
       'X-File-Name': encodeURIComponent(file.name || 'attachment'),
     });
-    const response = await fetch('/api/uploads', {
+    const response = await fetch(resolveAppUrl('/api/uploads', window.location.href), {
       method: 'POST',
       headers,
       body: file,
@@ -325,7 +353,7 @@
     } catch {
       payload = {};
     }
-    if (response.status === 401) {
+    if (response.status === 401 && isPocketmuxApiResponse(response)) {
       const error = responseError(payload, response.status, 'error.invalidToken');
       error.unauthorized = true;
       throw error;
@@ -1377,12 +1405,13 @@
     renderAuthError();
     try {
       await api('/api/health');
-      localStorage.setItem('tmux-relay-token', state.token);
+      if (!nativeBootstrap) localStorage.setItem('tmux-relay-token', state.token);
       showShell();
       await refreshSessions();
     } catch (error) {
       state.token = '';
-      if (error.unauthorized) localStorage.removeItem('tmux-relay-token');
+      if (error.unauthorized && !nativeBootstrap) localStorage.removeItem('tmux-relay-token');
+      if (error.unauthorized) publishAuthenticationRequiredToNativeShell();
       state.authErrorKey = error.unauthorized ? 'auth.invalidToken' : '';
       state.authErrorMessages = error.unauthorized
         ? null
@@ -1445,7 +1474,6 @@
   });
 
   applyLanguage();
-  const queryToken = new URLSearchParams(window.location.search).get('token');
   if (queryToken) {
     window.history.replaceState({}, document.title, window.location.pathname);
     state.token = queryToken;

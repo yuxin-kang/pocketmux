@@ -21,6 +21,17 @@
     return { clientId, file, url, upload: null };
   }
 
+  function resolveAppUrl(path, pageUrl) {
+    const normalizedPageUrl = new URL(pageUrl);
+    const pathSegments = normalizedPageUrl.pathname.split('/');
+    const lastSegment = pathSegments[pathSegments.length - 1] || '';
+    if (!normalizedPageUrl.pathname.endsWith('/') && !lastSegment.includes('.')) {
+      normalizedPageUrl.pathname += '/';
+    }
+    const baseUrl = new URL('.', normalizedPageUrl);
+    return new URL(String(path || '').replace(/^\/+/, ''), baseUrl).toString();
+  }
+
   async function resolveAttachmentUploads(attachments, uploadFile) {
     const results = await Promise.allSettled(attachments.map(async (attachment) => {
       if (attachment.upload?.attachmentId) return attachment.upload;
@@ -36,6 +47,7 @@
   return {
     createAttachmentSelection,
     findPaneById,
+    resolveAppUrl,
     resolveAttachmentUploads,
     shouldAutoScrollTerminal,
   };

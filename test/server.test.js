@@ -3,16 +3,22 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const fsp = require('node:fs/promises');
+const vm = require('node:vm');
 
 const {
+  ATTACHMENT_TTL_MS,
   buildSessionTree,
   createRemoteToolServer,
   isAllowedKey,
   PANE_FORMAT,
   parsePaneRows,
+  pruneExpiredAttachments,
+  readRequestBody,
+  removeStaleUploads,
   renamePane,
 } = require('../server');
 
@@ -65,15 +71,20 @@ test('mobile composer keeps long input visible above the soft keyboard', async (
   assert.match(styles, /\.composer-form textarea \{[^}]*overflow-y: auto;/);
   assert.match(html, /i18n\.js\?v=20260810-language-switch/);
   assert.match(html, /app-helpers\.js\?v=20260809-review-fixes/);
-  assert.match(html, /app\.js\?v=20260810-language-switch/);
+  assert.match(html, /app\.js\?v=20260812-native-language-bridge/);
+  assert.match(html, /window\.location\.replace\(`\$\{window\.location\.pathname\}\/\$\{window\.location\.search\}\$\{window\.location\.hash\}`\)/);
   assert.match(i18n, /PocketmuxI18n/);
-  assert.equal((html.match(/\/favicon\.ico\?v=20260809-pocketmux-bmp/g) || []).length, 2);
-  assert.match(html, /sizes="16x16 32x32 48x48"/);
-  assert.equal((html.match(/\/assets\/pocketmux-icon-192\.png\?v=20260809-pocketmux/g) || []).length, 1);
-  assert.equal((html.match(/\/assets\/pocketmux-icon\.png/g) || []).length, 2);
-  assert.match(styles, /\.brand-mark img \{/);
-  assert.match(manifest, /"src": "\/assets\/pocketmux-icon-192\.png"/);
-  assert.match(manifest, /"src": "\/assets\/pocketmux-icon-512\.png"/);
+  assert.equal((html.match(/\.\/favicon\.ico\?v=20260812-pocket-terminal/g) || []).length, 2);
+  assert.match(html, /sizes="16x16 32x32 48x48 64x64"/);
+  assert.equal((html.match(/\.\/assets\/pocketmux-icon-32\.png\?v=20260812-pocket-terminal/g) || []).length, 1);
+  assert.equal((html.match(/\.\/assets\/pocketmux-icon-180\.png\?v=20260812-pocket-terminal/g) || []).length, 1);
+  assert.equal((html.match(/\.\/assets\/pocketmux-icon\.png\?v=20260812-pocket-terminal/g) || []).length, 2);
+  assert.match(styles, /\.brand-mark img \{[^}]*width: 100%;[^}]*height: 100%;[^}]*object-fit: contain;/);
+  assert.doesNotMatch(styles, /\.brand-mark img \{[^}]*16[05]%/);
+  assert.match(manifest, /"start_url": "\."/);
+  assert.match(manifest, /"src": "\.\/assets\/pocketmux-icon-192\.png"/);
+  assert.match(manifest, /"src": "\.\/assets\/pocketmux-icon-512\.png"/);
+  assert.match(manifest, /"src": "\.\/assets\/pocketmux-icon-maskable-512\.png"/);
 });
 
 test('provides a persistent and accessible Chinese-English language switch', async () => {
@@ -91,6 +102,7 @@ test('provides a persistent and accessible Chinese-English language switch', asy
   assert.match(app, /localStorage\.getItem\(LANGUAGE_STORAGE_KEY\)/);
   assert.match(app, /localStorage\.setItem\(LANGUAGE_STORAGE_KEY, state\.language\)/);
   assert.match(app, /document\.documentElement\.lang = htmlLanguage\(state\.language\)/);
+  assert.match(app, /window\.parent\.postMessage\(\{[\s\S]*?type: NATIVE_LANGUAGE_MESSAGE_TYPE,[\s\S]*?language: state\.language/);
   assert.match(app, /payload\.messageEn/);
   assert.match(app, /state\.quickSwitchKind = kind/);
   assert.match(app, /renderQuickSwitchHeading\(\)/);
@@ -98,7 +110,7 @@ test('provides a persistent and accessible Chinese-English language switch', asy
   assert.match(styles, /\.icon-button \{ width: 35px; height: 35px;/);
   assert.match(styles, /\.language-switch \{[^}]*height: 35px;/);
   assert.match(styles, /\.language-button \{[^}]*min-width: 29px;[^}]*height: 31px;/);
-  assert.match(html, /styles\.css\?v=20260811-compact-language-switch/);
+  assert.match(html, /styles\.css\?v=20260812-complete-logo/);
 });
 
 test('serves the browser helper loaded by the main app', async (t) => {
@@ -122,6 +134,20 @@ test('serves the browser helper loaded by the main app', async (t) => {
   assert.equal(icon.headers.get('content-type'), 'image/png');
   assert.ok((await icon.arrayBuffer()).byteLength > 1000);
 
+  for (const asset of [
+    'pocketmux-icon-32.png',
+    'pocketmux-icon-180.png',
+    'pocketmux-icon-192.png',
+    'pocketmux-icon-512.png',
+    'pocketmux-icon-maskable-512.png',
+  ]) {
+    const response = await fetch(`${base}/assets/${asset}`);
+    assert.equal(response.status, 200, asset);
+    assert.equal(response.headers.get('content-type'), 'image/png', asset);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    assert.deepEqual([...bytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10], asset);
+  }
+
   const favicon = await fetch(`${base}/favicon.ico`);
   assert.equal(favicon.status, 200);
   assert.equal(favicon.headers.get('content-type'), 'image/x-icon');
@@ -130,6 +156,100 @@ test('serves the browser helper loaded by the main app', async (t) => {
   assert.ok(faviconBytes.byteLength > 1000);
   assert.deepEqual([...faviconBytes.subarray(0, 4)], [0, 0, 1, 0]);
 
+});
+
+test('loads static assets and APIs behind a stripping path-prefix proxy', async (t) => {
+  const { runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const upstreamBase = await listen(server);
+  const upstream = new URL(upstreamBase);
+  const prefix = '/tools/pocketmux';
+  const proxy = http.createServer((req, res) => {
+    const incomingUrl = new URL(req.url || '/', 'http://proxy.local');
+    if (incomingUrl.pathname !== prefix && !incomingUrl.pathname.startsWith(`${prefix}/`)) {
+      res.writeHead(404).end();
+      return;
+    }
+    const strippedPath = incomingUrl.pathname.slice(prefix.length) || '/';
+    const upstreamRequest = http.request({
+      hostname: upstream.hostname,
+      port: upstream.port,
+      method: req.method,
+      path: `${strippedPath}${incomingUrl.search}`,
+      headers: { ...req.headers, host: upstream.host },
+    }, (upstreamResponse) => {
+      res.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers);
+      upstreamResponse.pipe(res);
+    });
+    upstreamRequest.on('error', (error) => {
+      if (!res.headersSent) res.writeHead(502);
+      res.end(error.message);
+    });
+    req.pipe(upstreamRequest);
+  });
+  const proxyBase = await listen(proxy);
+  t.after(async () => {
+    await Promise.all([
+      new Promise((resolve) => proxy.close(resolve)),
+      new Promise((resolve) => server.close(resolve)),
+    ]);
+  });
+
+  const noSlashUrl = `${proxyBase}${prefix}?token=test-token`;
+  const noSlashResponse = await fetch(noSlashUrl);
+  assert.equal(noSlashResponse.status, 200);
+  const noSlashHtml = await noSlashResponse.text();
+  const canonicalScript = noSlashHtml.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(canonicalScript);
+  let canonicalLocation = '';
+  const noSlashLocation = new URL(noSlashUrl);
+  vm.runInNewContext(canonicalScript, {
+    window: {
+      location: {
+        pathname: noSlashLocation.pathname,
+        search: noSlashLocation.search,
+        hash: noSlashLocation.hash,
+        replace: (location) => { canonicalLocation = location; },
+      },
+    },
+  });
+  assert.equal(canonicalLocation, `${prefix}/?token=test-token`);
+
+  const pageUrl = `${proxyBase}${canonicalLocation}`;
+  const pageResponse = await fetch(pageUrl);
+  assert.equal(pageResponse.status, 200);
+  const html = await pageResponse.text();
+  const relativeAssets = [...html.matchAll(/(?:href|src)="(\.\/[^"#]+)"/g)]
+    .map((match) => match[1]);
+  assert.ok(relativeAssets.length >= 8);
+  for (const asset of new Set(relativeAssets)) {
+    const response = await fetch(new URL(asset, pageUrl));
+    assert.equal(response.status, 200, asset);
+  }
+
+  const health = await fetch(new URL('./api/health', pageUrl), {
+    headers: { Authorization: 'Bearer test-token' },
+  });
+  assert.equal(health.status, 200);
+  assert.equal((await health.json()).product, 'pocketmux');
+});
+
+test('health endpoint identifies Pocketmux for native connection validation', async (t) => {
+  const { runner } = fakeTmux();
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const response = await fetch(`${base}/api/health`, {
+    headers: { Authorization: 'Bearer test-token' },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    (({ ok, product, protocolVersion }) => ({ ok, product, protocolVersion }))(await response.json()),
+    { ok: true, product: 'pocketmux', protocolVersion: 1 },
+  );
+  assert.equal(response.headers.get('x-pocketmux-product'), 'pocketmux');
+  assert.equal(response.headers.get('x-pocketmux-protocol-version'), '1');
 });
 
 test('parses tmux pane rows and identifies Codex panes', () => {
@@ -465,6 +585,8 @@ test('protects APIs with a token and supports session/output/input flows', async
 
   const unauthorized = await fetch(`${base}/api/sessions`);
   assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.headers.get('x-pocketmux-product'), 'pocketmux');
+  assert.equal(unauthorized.headers.get('x-pocketmux-protocol-version'), '1');
   assert.equal((await unauthorized.json()).messageEn, 'An access token is required.');
 
   const headers = { Authorization: 'Bearer test-token' };
@@ -536,6 +658,328 @@ test('uploads a supported image and sends it with the prompt', async (t) => {
   const mutationCalls = calls.filter((args) => ['load-buffer', 'paste-buffer', 'send-keys'].includes(args[0]));
   assert.deepEqual(mutationCalls.map((args) => args[0]), ['load-buffer', 'paste-buffer', 'send-keys']);
   assert.equal(mutationCalls.at(-1).at(-1), 'Enter');
+});
+
+test('enforces aggregate attachment storage limits and removes process files on close', async (t) => {
+  const uploadRootDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'pocketmux-upload-quota-'));
+  t.after(() => fsp.rm(uploadRootDirectory, { recursive: true, force: true }));
+  const { runner } = fakeTmux();
+  const instance = createRemoteToolServer({
+    token: 'test-token',
+    tmuxRunner: runner,
+    uploadRootDirectory,
+    maxStoredAttachments: 2,
+    maxStoredAttachmentBytes: 8,
+  });
+  const base = await listen(instance.server);
+  const headers = {
+    Authorization: 'Bearer test-token',
+    'Content-Type': 'text/plain',
+    'X-File-Name': 'note.txt',
+  };
+
+  const first = await fetch(`${base}/api/uploads`, {
+    method: 'POST',
+    headers,
+    body: Buffer.from('12345'),
+  });
+  assert.equal(first.status, 201);
+  const second = await fetch(`${base}/api/uploads`, {
+    method: 'POST',
+    headers,
+    body: Buffer.from('6789'),
+  });
+  assert.equal(second.status, 413);
+  assert.equal((await second.json()).messageEn, 'Temporary attachment storage has reached its size limit. Try again later.');
+
+  await new Promise((resolve) => instance.server.close(resolve));
+  await instance.cleanup();
+  await assert.rejects(fsp.access(instance.uploadDirectory), { code: 'ENOENT' });
+});
+
+test('keeps attachment accounting intact when shutdown cleanup must be retried', async (t) => {
+  const uploadRootDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'pocketmux-upload-cleanup-retry-'));
+  t.after(() => fsp.rm(uploadRootDirectory, { recursive: true, force: true }));
+  const { runner } = fakeTmux();
+  let removalAttempts = 0;
+  const instance = createRemoteToolServer({
+    token: 'test-token',
+    tmuxRunner: runner,
+    uploadRootDirectory,
+    maxStoredAttachments: 1,
+    removeUploadDirectory: async (_root, directory) => {
+      removalAttempts += 1;
+      if (removalAttempts === 1) throw new Error('directory busy');
+      await fsp.rm(directory, { recursive: true, force: true });
+    },
+  });
+  const base = await listen(instance.server);
+  const headers = {
+    Authorization: 'Bearer test-token',
+    'Content-Type': 'text/plain',
+    'X-File-Name': 'note.txt',
+  };
+
+  const first = await fetch(`${base}/api/uploads`, {
+    method: 'POST',
+    headers,
+    body: Buffer.from('first'),
+  });
+  assert.equal(first.status, 201);
+  await assert.rejects(instance.cleanup(), /directory busy/);
+
+  const second = await fetch(`${base}/api/uploads`, {
+    method: 'POST',
+    headers,
+    body: Buffer.from('second'),
+  });
+  assert.equal(second.status, 429);
+  assert.equal((await second.json()).messageEn, 'Temporary attachment storage has reached its file limit. Try again later.');
+
+  await instance.cleanup();
+  assert.equal(removalAttempts, 2);
+  await assert.rejects(fsp.access(instance.uploadDirectory), { code: 'ENOENT' });
+  await new Promise((resolve) => instance.server.close(resolve));
+});
+
+test('removes stale process directories and legacy orphan files on startup cleanup', async (t) => {
+  const uploadRootDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'pocketmux-upload-stale-'));
+  t.after(() => fsp.rm(uploadRootDirectory, { recursive: true, force: true }));
+  const staleDirectory = path.join(uploadRootDirectory, '12345-old-0123456789ab');
+  const staleFile = path.join(uploadRootDirectory, 'legacy-orphan.txt');
+  const freshFile = path.join(uploadRootDirectory, 'fresh.txt');
+  await fsp.mkdir(staleDirectory);
+  await fsp.writeFile(path.join(staleDirectory, 'attachment.txt'), 'old');
+  await fsp.writeFile(staleFile, 'old');
+  await fsp.writeFile(freshFile, 'new');
+  const now = Date.now();
+  const oldTime = new Date(now - ATTACHMENT_TTL_MS - 1000);
+  await Promise.all([
+    fsp.utimes(staleDirectory, oldTime, oldTime),
+    fsp.utimes(staleFile, oldTime, oldTime),
+  ]);
+
+  await removeStaleUploads(uploadRootDirectory, ATTACHMENT_TTL_MS, now);
+
+  await assert.rejects(fsp.access(staleDirectory), { code: 'ENOENT' });
+  await assert.rejects(fsp.access(staleFile), { code: 'ENOENT' });
+  await fsp.access(freshFile);
+});
+
+test('stale cleanup recognizes every supported legacy attachment extension', async (t) => {
+  const uploadRootDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'pocketmux-upload-legacy-types-'));
+  t.after(() => fsp.rm(uploadRootDirectory, { recursive: true, force: true }));
+  const oldTime = new Date(Date.now() - ATTACHMENT_TTL_MS - 1000);
+  const extensions = [
+    'png', 'jpg', 'jpeg', 'gif', 'webp',
+    'pdf', 'txt', 'md', 'markdown', 'csv', 'json', 'xml', 'yaml', 'yml', 'rtf', 'log',
+    'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+  ];
+  await Promise.all(extensions.map(async (extension) => {
+    const file = path.join(uploadRootDirectory, `legacy.${extension}`);
+    await fsp.writeFile(file, 'old');
+    await fsp.utimes(file, oldTime, oldTime);
+  }));
+
+  await removeStaleUploads(uploadRootDirectory, ATTACHMENT_TTL_MS);
+
+  assert.deepEqual(await fsp.readdir(uploadRootDirectory), []);
+});
+
+test('does not follow a symlink used as the upload root', { skip: process.platform === 'win32' }, async (t) => {
+  const targetDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'pocketmux-upload-target-'));
+  const uploadRootDirectory = path.join(os.tmpdir(), `pocketmux-upload-root-link-${process.pid}-${Date.now()}`);
+  t.after(async () => {
+    await fsp.rm(uploadRootDirectory, { force: true });
+    await fsp.rm(targetDirectory, { recursive: true, force: true });
+  });
+  await fsp.writeFile(path.join(targetDirectory, 'keep.txt'), 'keep');
+  await fsp.symlink(targetDirectory, uploadRootDirectory, 'dir');
+
+  await assert.rejects(removeStaleUploads(uploadRootDirectory, ATTACHMENT_TTL_MS), /symlink/);
+  await fsp.access(path.join(targetDirectory, 'keep.txt'));
+});
+
+test('does not follow a symlink entry during upload cleanup', { skip: process.platform === 'win32' }, async (t) => {
+  const uploadRootDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'pocketmux-upload-entry-link-'));
+  const targetDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'pocketmux-upload-target-'));
+  t.after(async () => {
+    await fsp.rm(uploadRootDirectory, { recursive: true, force: true });
+    await fsp.rm(targetDirectory, { recursive: true, force: true });
+  });
+  const oldTime = new Date(Date.now() - ATTACHMENT_TTL_MS - 1000);
+  await fsp.writeFile(path.join(targetDirectory, 'keep.txt'), 'keep');
+  const entryPath = path.join(uploadRootDirectory, '12345-old-0123456789ab');
+  await fsp.symlink(targetDirectory, entryPath, 'dir');
+  await fsp.lutimes(entryPath, oldTime, oldTime);
+
+  await assert.rejects(removeStaleUploads(uploadRootDirectory, ATTACHMENT_TTL_MS), /symlink/);
+  await fsp.access(path.join(targetDirectory, 'keep.txt'));
+  const entryStats = await fsp.lstat(entryPath);
+  assert.equal(entryStats.isSymbolicLink(), true);
+});
+
+test('keeps an expired attachment accounted for when disk deletion fails', async () => {
+  const attachment = {
+    id: 'expired',
+    path: '/tmp/pocketmux-expired',
+    size: 42,
+    createdAt: 1,
+  };
+  const attachments = new Map([[attachment.id, attachment]]);
+  await assert.rejects(
+    pruneExpiredAttachments(attachments, 2, async () => { throw new Error('busy'); }),
+    /busy/,
+  );
+  assert.equal(attachments.get(attachment.id), attachment);
+
+  const removedBytes = await pruneExpiredAttachments(attachments, 2, async () => undefined);
+  assert.equal(removedBytes, 42);
+  assert.equal(attachments.size, 0);
+});
+
+test('rejects an aborted attachment body without waiting for an end event', async () => {
+  const { PassThrough } = require('node:stream');
+  const request = new PassThrough();
+  request.headers = {};
+  const reading = readRequestBody(request, 1024, 'too large');
+  request.write('partial');
+  request.emit('aborted');
+  await assert.rejects(reading, /Request aborted/);
+});
+
+test('rejects an attachment request that aborted before its queued body read began', async () => {
+  const { PassThrough } = require('node:stream');
+  const request = new PassThrough();
+  request.headers = {};
+  request.aborted = true;
+  await assert.rejects(readRequestBody(request, 1024, 'too large'), /Request aborted/);
+});
+
+test('drains oversized declared bodies without exposing a late socket error', async () => {
+  const { PassThrough } = require('node:stream');
+  const request = new PassThrough();
+  request.headers = { 'content-length': '2048' };
+  await assert.rejects(readRequestBody(request, 1024, 'too large'), /Request body too large/);
+  request.emit('close');
+  assert.doesNotThrow(() => request.emit('error', new Error('late disconnect')));
+});
+
+test('times out a stalled upload without blocking pane input', async (t) => {
+  const { runner } = fakeTmux();
+  const instance = createRemoteToolServer({
+    token: 'test-token',
+    tmuxRunner: runner,
+    uploadReadTimeoutMs: 150,
+    maxConcurrentUploadReads: 1,
+  });
+  const base = await listen(instance.server);
+  t.after(() => instance.server.close());
+
+  let stalledRequest;
+  const stalledResponse = new Promise((resolve, reject) => {
+    stalledRequest = http.request(`${base}/api/uploads`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-token',
+        'Content-Type': 'text/plain',
+        'Content-Length': '8',
+        'X-File-Name': 'stalled.txt',
+      },
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve({
+        status: response.statusCode,
+        payload: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+      }));
+    });
+    stalledRequest.on('error', reject);
+    stalledRequest.flushHeaders();
+    stalledRequest.write('x');
+  });
+
+  const input = await fetch(`${base}/api/panes/%251/input`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'still responsive', submit: true }),
+    signal: AbortSignal.timeout(1000),
+  });
+  assert.equal(input.status, 200);
+
+  const competingUpload = await fetch(`${base}/api/uploads`, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer test-token',
+      'Content-Type': 'text/plain',
+      'X-File-Name': 'competing.txt',
+    },
+    body: Buffer.from('competing'),
+  });
+  assert.equal(competingUpload.status, 429);
+  assert.equal(
+    (await competingUpload.json()).messageEn,
+    'Too many attachments are uploading at once. Try again shortly.',
+  );
+
+  const timedOut = await stalledResponse;
+  assert.equal(timedOut.status, 408);
+  assert.equal(timedOut.payload.messageEn, 'The attachment upload timed out. Select it and try again.');
+  stalledRequest.destroy();
+});
+
+test('bounds the default upload read concurrency at four near-limit requests', async (t) => {
+  const { runner } = fakeTmux();
+  const instance = createRemoteToolServer({
+    token: 'test-token',
+    tmuxRunner: runner,
+    uploadReadTimeoutMs: 250,
+  });
+  const base = await listen(instance.server);
+  t.after(() => instance.server.close());
+
+  const openStalledUpload = (index) => {
+    let request;
+    const response = new Promise((resolve, reject) => {
+      request = http.request(`${base}/api/uploads`, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'text/plain',
+          'Content-Length': String(25 * 1024 * 1024),
+          'X-File-Name': `stalled-${index}.txt`,
+        },
+      }, (incoming) => {
+        const chunks = [];
+        incoming.on('data', (chunk) => chunks.push(chunk));
+        incoming.on('end', () => resolve({
+          status: incoming.statusCode,
+          payload: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+        }));
+      });
+      request.on('error', reject);
+      request.flushHeaders();
+      request.write('x');
+    });
+    return { request, response };
+  };
+
+  const stalled = Array.from({ length: 4 }, (_, index) => openStalledUpload(index));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const rejected = await fetch(`${base}/api/uploads`, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer test-token',
+      'Content-Type': 'text/plain',
+      'X-File-Name': 'fifth.txt',
+    },
+    body: Buffer.from('fifth'),
+  });
+  assert.equal(rejected.status, 429);
+
+  const timedOut = await Promise.all(stalled.map(({ response }) => response));
+  assert.deepEqual(timedOut.map(({ status }) => status), [408, 408, 408, 408]);
+  stalled.forEach(({ request }) => request.destroy());
 });
 
 test('uploads common documents through the same attachment endpoint', async (t) => {

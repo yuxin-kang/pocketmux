@@ -20,19 +20,35 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 const MAX_COMBINED_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+const MAX_STORED_ATTACHMENTS = 100;
+const MAX_STORED_ATTACHMENT_BYTES = 200 * 1024 * 1024;
 const ATTACHMENT_TTL_MS = 24 * 60 * 60 * 1000;
+const UPLOAD_READ_TIMEOUT_MS = 30 * 1000;
+const MAX_CONCURRENT_UPLOAD_READS = 4;
+const PROCESS_UPLOAD_DIRECTORY_PATTERN = /^\d+-[a-z0-9]+-[a-f0-9]{12}$/;
 const MAX_INPUT_CHARS = 8000;
 const MAX_COMPOSED_INPUT_CHARS = 12000;
 const MAX_WINDOW_NAME_CHARS = 64;
 const DEFAULT_OUTPUT_LINES = 240;
 const MAX_OUTPUT_LINES = 600;
 const DEFAULT_PORT = 3789;
+const POCKETMUX_API_HEADERS = Object.freeze({
+  'X-Pocketmux-Product': 'pocketmux',
+  'X-Pocketmux-Protocol-Version': '1',
+});
 
 const IMAGE_TYPES = new Map([
   ['image/png', { extension: 'png', signature: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) }],
   ['image/jpeg', { extension: 'jpg', signature: Buffer.from([0xff, 0xd8, 0xff]) }],
   ['image/gif', { extension: 'gif', signature: Buffer.from('GIF') }],
   ['image/webp', { extension: 'webp', signature: Buffer.from('RIFF') }],
+]);
+const IMAGE_EXTENSION_CONTENT_TYPES = new Map([
+  ['png', 'image/png'],
+  ['jpg', 'image/jpeg'],
+  ['jpeg', 'image/jpeg'],
+  ['gif', 'image/gif'],
+  ['webp', 'image/webp'],
 ]);
 const ZIP_SIGNATURE = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
 const OLE_SIGNATURE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
@@ -86,6 +102,14 @@ const FILE_EXTENSION_DEFINITIONS = new Map([
   ['xls', FILE_TYPE_DEFINITIONS.get('application/vnd.ms-excel')],
   ['ppt', FILE_TYPE_DEFINITIONS.get('application/vnd.ms-powerpoint')],
 ]);
+const LEGACY_UPLOAD_EXTENSIONS = new Set([
+  ...IMAGE_EXTENSION_CONTENT_TYPES.keys(),
+  ...FILE_EXTENSION_DEFINITIONS.keys(),
+]);
+const LEGACY_UPLOAD_FILE_PATTERN = new RegExp(
+  `^[a-zA-Z0-9._-]+\\.(?:${[...LEGACY_UPLOAD_EXTENSIONS].join('|')})$`,
+  'i',
+);
 const ATTACHMENT_ID_PATTERN = /^[a-f0-9]{32}$/;
 
 const SESSION_FORMAT = [
@@ -585,11 +609,20 @@ async function cancelPaneMode(tmuxRunner, pane) {
   await tmuxRunner(['send-keys', '-X', '-t', pane.id, 'cancel']);
 }
 
-function readRequestBody(req, maxBytes, tooLargeMessage) {
+function readRequestBody(req, maxBytes, tooLargeMessage, { timeoutMs = 0 } = {}) {
   return new Promise((resolve, reject) => {
+    if (req.aborted || req.destroyed) {
+      reject(new ApiError(
+        400,
+        'Request aborted',
+        '上传已中断，请重新选择附件后再试。',
+        'The upload was interrupted. Select the attachment and try again.',
+      ));
+      return;
+    }
     const declaredLength = Number.parseInt(req.headers['content-length'] || '', 10);
     if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-      req.resume();
+      drainRequest(req);
       reject(new ApiError(413, 'Request body too large', tooLargeMessage));
       return;
     }
@@ -597,14 +630,23 @@ function readRequestBody(req, maxBytes, tooLargeMessage) {
     const chunks = [];
     let size = 0;
     let settled = false;
+    let timer = null;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('aborted', onAborted);
+      req.off('error', onError);
+    };
     const fail = (error) => {
       if (settled) return;
       settled = true;
-      req.resume();
+      cleanup();
+      drainRequest(req);
       reject(error);
     };
 
-    req.on('data', (chunk) => {
+    const onData = (chunk) => {
       if (settled) return;
       size += chunk.length;
       if (size > maxBytes) {
@@ -612,14 +654,43 @@ function readRequestBody(req, maxBytes, tooLargeMessage) {
         return;
       }
       chunks.push(chunk);
-    });
-    req.on('end', () => {
+    };
+    const onEnd = () => {
       if (settled) return;
       settled = true;
+      cleanup();
       resolve(Buffer.concat(chunks));
-    });
-    req.on('error', (error) => fail(error));
+    };
+    const onAborted = () => fail(new ApiError(
+      400,
+      'Request aborted',
+      '上传已中断，请重新选择附件后再试。',
+      'The upload was interrupted. Select the attachment and try again.',
+    ));
+    const onError = (error) => fail(error);
+
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('aborted', onAborted);
+    req.on('error', onError);
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      timer = setTimeout(() => fail(new ApiError(
+        408,
+        'Request body timed out',
+        '附件上传超时，请重新选择后再试。',
+        'The attachment upload timed out. Select it and try again.',
+      )), timeoutMs);
+      timer.unref?.();
+    }
   });
+}
+
+function drainRequest(req) {
+  // The response may be written before a slow or disconnected client has
+  // finished its request stream. Keep a harmless listener for the remaining
+  // lifetime of this request because some streams report close before error.
+  req.on('error', () => undefined);
+  req.resume();
 }
 
 async function readJsonBody(req) {
@@ -647,13 +718,7 @@ function fileExtension(fileName) {
 function detectImageType(contentType, buffer, fileName = '') {
   let normalizedType = normalizedContentType(contentType);
   if (!normalizedType || normalizedType === 'application/octet-stream') {
-    const extensionType = {
-      png: 'image/png',
-      jpg: 'image/jpeg',
-      jpeg: 'image/jpeg',
-      gif: 'image/gif',
-      webp: 'image/webp',
-    }[fileExtension(fileName)];
+    const extensionType = IMAGE_EXTENSION_CONTENT_TYPES.get(fileExtension(fileName));
     normalizedType = extensionType || normalizedType;
   }
   if (normalizedType === 'image/jpg') normalizedType = 'image/jpeg';
@@ -703,13 +768,95 @@ function requestFileName(req) {
   return safeName || 'attachment';
 }
 
-async function ensureUploadDirectory() {
-  await fsp.mkdir(UPLOAD_DIR, { recursive: true, mode: 0o700 });
-  await fsp.chmod(UPLOAD_DIR, 0o700);
+function isUnix() {
+  return process.platform !== 'win32';
 }
 
-async function saveAttachment(req) {
-  const content = await readRequestBody(req, MAX_ATTACHMENT_BYTES, '附件不能超过 25 MB。');
+function assertPrivateUploadDirectory(stats, directory) {
+  if (!stats.isDirectory()) throw new Error(`Upload path is not a directory: ${directory}`);
+  if (isUnix()) {
+    if (typeof process.getuid === 'function' && stats.uid !== process.getuid()) {
+      throw new Error(`Upload directory is not owned by the current user: ${directory}`);
+    }
+    if ((stats.mode & 0o777) !== 0o700) {
+      throw new Error(`Upload directory must have mode 0700: ${directory}`);
+    }
+  }
+}
+
+async function ensureUploadDirectory(uploadDirectory, { create = true, recursive = false } = {}) {
+  if (create) {
+    await fsp.mkdir(uploadDirectory, { mode: 0o700, recursive });
+  }
+  const stats = await fsp.lstat(uploadDirectory);
+  if (stats.isSymbolicLink()) throw new Error(`Upload path must not be a symlink: ${uploadDirectory}`);
+  if (isUnix() && typeof process.getuid === 'function' && stats.uid !== process.getuid()) {
+    throw new Error(`Upload directory is not owned by the current user: ${uploadDirectory}`);
+  }
+  await fsp.chmod(uploadDirectory, 0o700);
+  const verifiedStats = await fsp.lstat(uploadDirectory);
+  if (verifiedStats.isSymbolicLink()) throw new Error(`Upload path must not be a symlink: ${uploadDirectory}`);
+  assertPrivateUploadDirectory(verifiedStats, uploadDirectory);
+}
+
+async function removeProcessUploadDirectory(uploadRootDirectory, uploadDirectory) {
+  const rootStats = await fsp.lstat(uploadRootDirectory);
+  if (rootStats.isSymbolicLink()) throw new Error(`Upload root must not be a symlink: ${uploadRootDirectory}`);
+  assertPrivateUploadDirectory(rootStats, uploadRootDirectory);
+  if (path.dirname(path.resolve(uploadDirectory)) !== path.resolve(uploadRootDirectory)
+      || !PROCESS_UPLOAD_DIRECTORY_PATTERN.test(path.basename(uploadDirectory))) {
+    throw new Error(`Refusing to remove an unrecognized upload directory: ${uploadDirectory}`);
+  }
+  const directoryStats = await fsp.lstat(uploadDirectory);
+  if (directoryStats.isSymbolicLink()) throw new Error(`Upload entry must not be a symlink: ${uploadDirectory}`);
+  if (!directoryStats.isDirectory()) throw new Error(`Upload path is not a directory: ${uploadDirectory}`);
+  await fsp.rm(uploadDirectory, { recursive: true, force: true });
+}
+
+async function removeStaleUploads(uploadRootDirectory, ttlMs, now = Date.now()) {
+  await ensureUploadDirectory(uploadRootDirectory, { recursive: true });
+  const entries = await fsp.readdir(uploadRootDirectory, { withFileTypes: true });
+  await Promise.all(entries.map(async (entry) => {
+    const entryPath = path.join(uploadRootDirectory, entry.name);
+    try {
+      const stats = await fsp.lstat(entryPath);
+      if (stats.isSymbolicLink()) throw new Error(`Upload entry must not be a symlink: ${entryPath}`);
+      const isProcessDirectory = stats.isDirectory() && PROCESS_UPLOAD_DIRECTORY_PATTERN.test(entry.name);
+      const isLegacyFile = stats.isFile() && LEGACY_UPLOAD_FILE_PATTERN.test(entry.name);
+      if (stats.mtimeMs < now - ttlMs && (isProcessDirectory || isLegacyFile)) {
+        await fsp.rm(entryPath, { recursive: isProcessDirectory, force: true });
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }));
+}
+
+async function prepareUploadDirectory(uploadRootDirectory, uploadDirectory, ttlMs) {
+  await removeStaleUploads(uploadRootDirectory, ttlMs);
+  await ensureUploadDirectory(uploadDirectory);
+}
+
+async function pruneExpiredAttachments(attachments, expiry, removeFile = fsp.rm) {
+  const expired = [...attachments.values()].filter((attachment) => attachment.createdAt < expiry);
+  let removedBytes = 0;
+  for (const attachment of expired) {
+    await removeFile(attachment.path, { force: true });
+    if (attachments.get(attachment.id) === attachment) {
+      attachments.delete(attachment.id);
+      removedBytes += attachment.size;
+    }
+  }
+  return removedBytes;
+}
+
+async function readAttachment(req, timeoutMs) {
+  const content = await readRequestBody(
+    req,
+    MAX_ATTACHMENT_BYTES,
+    '附件不能超过 25 MB。',
+    { timeoutMs },
+  );
   if (content.length === 0) {
     throw new ApiError(400, 'Attachment body is empty', '请选择一个附件后再发送。');
   }
@@ -722,9 +869,13 @@ async function saveAttachment(req) {
     throw new ApiError(413, 'Image body too large', '图片不能超过 10 MB。');
   }
 
-  await ensureUploadDirectory();
+  return { attachmentType, content, name };
+}
+
+async function saveAttachment(uploadDirectory, { attachmentType, content, name }) {
+  await ensureUploadDirectory(uploadDirectory, { create: false });
   const id = randomBytes(16).toString('hex');
-  const filePath = path.join(UPLOAD_DIR, `${id}.${attachmentType.extension}`);
+  const filePath = path.join(uploadDirectory, `${id}.${attachmentType.extension}`);
   await fsp.writeFile(filePath, content, { encoding: null, mode: 0o600, flag: 'wx' });
   return {
     id,
@@ -772,6 +923,7 @@ function sendJson(res, statusCode, payload) {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
+    ...POCKETMUX_API_HEADERS,
   });
   res.end(body);
 }
@@ -812,8 +964,11 @@ async function serveStatic(res, pathname) {
     '/styles.css': 'styles.css',
     '/favicon.ico': 'favicon.ico',
     '/assets/pocketmux-icon.png': 'assets/pocketmux-icon.png',
+    '/assets/pocketmux-icon-32.png': 'assets/pocketmux-icon-32.png',
+    '/assets/pocketmux-icon-180.png': 'assets/pocketmux-icon-180.png',
     '/assets/pocketmux-icon-192.png': 'assets/pocketmux-icon-192.png',
     '/assets/pocketmux-icon-512.png': 'assets/pocketmux-icon-512.png',
+    '/assets/pocketmux-icon-maskable-512.png': 'assets/pocketmux-icon-maskable-512.png',
     '/manifest.webmanifest': 'manifest.webmanifest',
   };
   const fileName = files[pathname];
@@ -850,6 +1005,13 @@ function routePath(pathname) {
 function createRemoteToolServer({
   token = process.env.REMOTE_TOOL_TOKEN || randomBytes(24).toString('hex'),
   tmuxRunner = runTmux,
+  uploadRootDirectory = UPLOAD_DIR,
+  maxStoredAttachments = MAX_STORED_ATTACHMENTS,
+  maxStoredAttachmentBytes = MAX_STORED_ATTACHMENT_BYTES,
+  attachmentTtlMs = ATTACHMENT_TTL_MS,
+  uploadReadTimeoutMs = UPLOAD_READ_TIMEOUT_MS,
+  maxConcurrentUploadReads = MAX_CONCURRENT_UPLOAD_READS,
+  removeUploadDirectory = removeProcessUploadDirectory,
 } = {}) {
   if (!token || typeof token !== 'string') {
     throw new Error('A non-empty access token is required.');
@@ -857,18 +1019,53 @@ function createRemoteToolServer({
 
   const paneMutationQueues = new Map();
   const attachments = new Map();
+  const uploadDirectory = path.join(
+    uploadRootDirectory,
+    `${process.pid}-${Date.now().toString(36)}-${randomBytes(6).toString('hex')}`,
+  );
+  const uploadDirectoryReady = prepareUploadDirectory(
+    uploadRootDirectory,
+    uploadDirectory,
+    attachmentTtlMs,
+  );
+  let storedAttachmentBytes = 0;
+  let activeUploadReads = 0;
+  let attachmentMutationQueue = Promise.resolve();
+  let attachmentCleanupPromise = null;
   const pruneAttachments = async () => {
-    const expiry = Date.now() - ATTACHMENT_TTL_MS;
-    const expired = [...attachments.values()].filter((attachment) => attachment.createdAt < expiry);
-    for (const attachment of expired) {
-      attachments.delete(attachment.id);
-      await fsp.rm(attachment.path, { force: true });
-    }
+    const expiry = Date.now() - attachmentTtlMs;
+    storedAttachmentBytes -= await pruneExpiredAttachments(attachments, expiry);
+  };
+  const queueAttachmentMutation = (operation) => {
+    const queued = attachmentMutationQueue.catch(() => undefined).then(operation);
+    attachmentMutationQueue = queued;
+    return queued;
   };
   const attachmentCleanupTimer = setInterval(() => {
-    void pruneAttachments().catch((error) => console.error('[pocketmux] attachment cleanup failed', error));
+    void queueAttachmentMutation(pruneAttachments)
+      .catch((error) => console.error('[pocketmux] attachment cleanup failed', error));
   }, 60 * 60 * 1000);
   attachmentCleanupTimer.unref?.();
+
+  const cleanupAttachments = () => {
+    clearInterval(attachmentCleanupTimer);
+    if (attachmentCleanupPromise) return attachmentCleanupPromise;
+    const cleanup = queueAttachmentMutation(async () => {
+      await uploadDirectoryReady.catch(() => undefined);
+      try {
+        await removeUploadDirectory(uploadRootDirectory, uploadDirectory);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+      attachments.clear();
+      storedAttachmentBytes = 0;
+    });
+    attachmentCleanupPromise = cleanup.catch((error) => {
+      attachmentCleanupPromise = null;
+      throw error;
+    });
+    return attachmentCleanupPromise;
+  };
 
   const queuePaneMutation = (paneId, operation) => {
     const previous = paneMutationQueues.get(paneId) || Promise.resolve();
@@ -910,7 +1107,12 @@ function createRemoteToolServer({
 
       const parts = routePath(pathname);
       if (req.method === 'GET' && parts.length === 2 && parts[1] === 'health') {
-        sendJson(res, 200, { ok: true, now: new Date().toISOString() });
+        sendJson(res, 200, {
+          ok: true,
+          product: 'pocketmux',
+          protocolVersion: 1,
+          now: new Date().toISOString(),
+        });
         return;
       }
 
@@ -921,9 +1123,49 @@ function createRemoteToolServer({
       }
 
       if (req.method === 'POST' && parts.length === 2 && parts[1] === 'uploads') {
-        await pruneAttachments();
-        const attachment = await saveAttachment(req);
-        attachments.set(attachment.id, attachment);
+        // Reading a potentially slow network body must not hold the shared
+        // attachment mutation queue. Only quota checks and disk mutations are
+        // serialized after the complete body has arrived.
+        if (activeUploadReads >= maxConcurrentUploadReads) {
+          drainRequest(req);
+          throw new ApiError(
+            429,
+            'Too many concurrent uploads',
+            '同时上传的附件过多，请稍后再试。',
+            'Too many attachments are uploading at once. Try again shortly.',
+          );
+        }
+        activeUploadReads += 1;
+        let pendingAttachment;
+        try {
+          pendingAttachment = await readAttachment(req, uploadReadTimeoutMs);
+        } finally {
+          activeUploadReads -= 1;
+        }
+        const attachment = await queueAttachmentMutation(async () => {
+          await uploadDirectoryReady;
+          await pruneAttachments();
+          if (attachments.size >= maxStoredAttachments) {
+            throw new ApiError(
+              429,
+              'Attachment storage full',
+              '临时附件数量已达到上限，请稍后再试。',
+              'Temporary attachment storage has reached its file limit. Try again later.',
+            );
+          }
+          if (storedAttachmentBytes + pendingAttachment.content.length > maxStoredAttachmentBytes) {
+            throw new ApiError(
+              413,
+              'Attachment storage full',
+              '临时附件总大小已达到上限，请稍后再试。',
+              'Temporary attachment storage has reached its size limit. Try again later.',
+            );
+          }
+          const savedAttachment = await saveAttachment(uploadDirectory, pendingAttachment);
+          attachments.set(savedAttachment.id, savedAttachment);
+          storedAttachmentBytes += savedAttachment.size;
+          return savedAttachment;
+        });
         sendJson(res, 201, {
           ok: true,
           attachmentId: attachment.id,
@@ -1024,7 +1266,7 @@ function createRemoteToolServer({
             throw new ApiError(400, 'Invalid attachment id', '附件标识无效。');
           }
 
-          await pruneAttachments();
+          await queueAttachmentMutation(pruneAttachments);
           const messageAttachments = requestedAttachmentIds.map((id) => attachments.get(id) || null);
           if (messageAttachments.some((attachment) => !attachment)) {
             throw new ApiError(404, 'Attachment not found', '部分附件已过期，请重新选择后再发送。');
@@ -1070,6 +1312,7 @@ function createRemoteToolServer({
         messageEn: 'Endpoint not found.',
       });
     } catch (error) {
+      if (req.aborted || res.destroyed) return;
       if (error instanceof ApiError) {
         sendJson(res, error.statusCode, {
           error: error.name,
@@ -1087,13 +1330,17 @@ function createRemoteToolServer({
     }
   });
   server.on('close', () => {
-    clearInterval(attachmentCleanupTimer);
-    const cleanup = [...attachments.values()].map((attachment) => fsp.rm(attachment.path, { force: true }));
-    attachments.clear();
-    void Promise.all(cleanup).catch((error) => console.error('[pocketmux] attachment shutdown cleanup failed', error));
+    void cleanupAttachments()
+      .catch((error) => console.error('[pocketmux] attachment shutdown cleanup failed', error));
   });
 
-  return { server, token };
+  return {
+    server,
+    token,
+    cleanup: cleanupAttachments,
+    uploadDirectory,
+    uploadDirectoryReady,
+  };
 }
 
 function networkAddresses() {
@@ -1111,7 +1358,7 @@ function networkAddresses() {
 function start() {
   const port = Number.parseInt(process.env.PORT || String(DEFAULT_PORT), 10);
   const host = process.env.HOST || '0.0.0.0';
-  const { server, token } = createRemoteToolServer();
+  const { server, token, cleanup } = createRemoteToolServer();
   server.listen(port, host, () => {
     const addresses = networkAddresses();
     console.log(`pocketmux listening on ${host}:${port}`);
@@ -1127,7 +1374,10 @@ function start() {
     console.log('Security: keep this port on a trusted LAN or use Tailscale/SSH; do not expose it directly to the public internet.');
   });
 
-  const shutdown = () => server.close(() => process.exit(0));
+  const shutdown = () => server.close(async () => {
+    await cleanup();
+    process.exit(0);
+  });
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
 }
@@ -1140,6 +1390,10 @@ module.exports = {
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_COMBINED_ATTACHMENT_BYTES,
   MAX_IMAGE_BYTES,
+  MAX_STORED_ATTACHMENTS,
+  MAX_STORED_ATTACHMENT_BYTES,
+  ATTACHMENT_TTL_MS,
+  UPLOAD_DIR,
   PANE_FORMAT,
   SESSION_FORMAT,
   buildAttachmentPrompt,
@@ -1153,6 +1407,9 @@ module.exports = {
   isCodexPane,
   parsePaneRows,
   parseSessionRows,
+  pruneExpiredAttachments,
+  readRequestBody,
+  removeStaleUploads,
   renamePane,
   runTmux,
 };

@@ -1,8 +1,8 @@
 {
   "default": "pocketmux-app-icon.svg",
   "bg_color": "#111216",
-  "android_bg": "pocketmux-android-background.svg",
-  "android_fg": "pocketmux-android-foreground.svg",
-  "android_fg_scale": 76,
-  "android_monochrome": "pocketmux-android-monochrome.svg"
+  "android_bg": "pocketmux-android-background.png",
+  "android_fg": "pocketmux-android-foreground-layer.png",
+  "android_fg_scale": 21,
+  "android_monochrome": "pocketmux-android-monochrome-layer.png"
 }

@@ -6,3 +6,8 @@ npm-debug.log*
 pic/
 graphify-out/
 .omx/
+
+# Local icon-generation probes
+apps/pocketmux-native/src-tauri/icons-probe/
+apps/pocketmux-native/src-tauri/icons-temp/
+apps/pocketmux-native/src-tauri/gen/android/app/src/main/res/mipmap-*/pocketmux_launcher.png

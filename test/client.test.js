@@ -8,6 +8,7 @@ const path = require('node:path');
 const {
   createAttachmentSelection,
   findPaneById,
+  resolveAppUrl,
   resolveAttachmentUploads,
   shouldAutoScrollTerminal,
 } = require('../public/app-helpers');
@@ -63,6 +64,21 @@ test('only pauses terminal auto-follow for a focused mobile composer', () => {
     inputFocused: true,
     atBottom: false,
   }), true);
+});
+
+test('resolves API routes relative to the deployed Pocketmux base path', () => {
+  assert.equal(
+    resolveAppUrl('/api/sessions', 'https://example.com/tools/pocketmux/?native=1'),
+    'https://example.com/tools/pocketmux/api/sessions',
+  );
+  assert.equal(
+    resolveAppUrl('/api/sessions', 'https://example.com/tools/pocketmux?native=1'),
+    'https://example.com/tools/pocketmux/api/sessions',
+  );
+  assert.equal(
+    resolveAppUrl('/api/sessions', 'https://example.com/?native=1'),
+    'https://example.com/api/sessions',
+  );
 });
 
 test('keeps a rename dialog bound to its original pane', () => {

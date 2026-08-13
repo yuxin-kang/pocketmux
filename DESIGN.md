@@ -2,8 +2,8 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-08-11
-- Primary product surfaces: 手机浏览器中的 tmux/Agent 控制台、单机 Node 服务
+- Last refreshed: 2026-08-12
+- Primary product surfaces: 手机浏览器中的 tmux/Agent 控制台、单机 Node 服务、Android/Windows Native 连接外壳
 - Evidence reviewed: 空仓库；运行环境中存在 tmux 3.4、Node 24，`leo_lab` 有 9 个 Codex pane
 
 ## Brand
@@ -38,11 +38,11 @@
 - Spacing/layout rhythm: 8px 基础间距；桌面双栏，手机改为上下分区和横向滚动 pane 条。
 - Shape/radius/elevation: 12px 卡片圆角，细边框，低对比阴影；终端区域保持近方形和高对比。
 - Motion: 仅使用短促的连接/刷新过渡；支持 `prefers-reduced-motion`。
-- Imagery/iconography: 品牌入口使用项目自有的极简 Pocket + tmux 分屏图标；其余操作图标继续使用 CSS/文本符号，不引入图标依赖。
+- Imagery/iconography: 品牌入口使用项目自有的极简 Pocket + tmux 分屏图标；其余操作图标使用内联 SVG 或简单 CSS 图形，不引入外部图标依赖，也不依赖不同平台可能缺字的 Unicode 符号。
 
 ## Components
 - Existing components to reuse: 无。
-- New/changed components: AuthGate、LanguageSwitcher（认证页和主工具栏共享“中 / EN”分段控件）、SessionRail、PaneStrip、PaneRenamer（任意 pane 独立显示名，单-pane window 同步 tmux 窗口名）、MobileQuickSwitcher（深色底部选择面板）、TerminalViewport、Composer（最多 10 个混合附件的可移除队列）、ConnectionBadge、Toast。
+- New/changed components: AuthGate、LanguageSwitcher（认证页和主工具栏共享“中 / EN”分段控件）、SessionRail、PaneStrip、PaneRenamer（任意 pane 独立显示名，单-pane window 同步 tmux 窗口名）、MobileQuickSwitcher（深色底部选择面板）、TerminalViewport、Composer（最多 10 个混合附件的可移除队列）、ConnectionBadge、NativeConnectionDrawer（当前及历史连接直接纵向排列，点击非当前项立即切换，底部固定新增/刷新/退出三个操作）、Toast。
 - Variants and states: loading、selected、busy/标题 spinner、dead pane、empty、unauthorized、offline、附件待发送/上传中/部分无效。
 - Token/component ownership: `public/styles.css` 统一 CSS 变量；`public/i18n.js` 统一中英文文案；`public/app.js` 负责状态和 DOM 更新。
 
@@ -57,7 +57,9 @@
 ## Responsive behavior
 - Supported breakpoints/devices: 先支持 360px 以上手机和常见桌面浏览器。
 - Layout adaptations: 780px 以下 session 变为横向滚动条，pane 变为横向 chip；顶部保留 sticky 的 session / Pane 快速选择器和紧凑语言选择器，点击后打开统一的深色底部面板，避免原生系统弹窗破坏主题；输入区固定在终端底部附近。
-- Touch/hover differences: 主要操作触控区域至少约 44px；顶部 LanguageSwitcher 采用与 35px 刷新按钮同高的紧凑分段控件，保留清晰的 focus/active 状态；hover 只作补充，不承载关键操作。
+- Native Android safe areas: Android 15/16 的强制 edge-to-edge 由原生层统一处理；WebView 使用 `systemBars + displayCutout` 的真实布局边距，视口始终位于状态栏和手势/三键导航栏之间，输入法使用 `adjustResize`。网页层的 `env(safe-area-inset-*)` 只作浏览器/PWA 补充，不能替代原生 inset。
+- Android launcher icon: Android 8+ 使用纯色背景与缩放到安全区的透明前景组成 adaptive icon，标准 `icon` 与圆形 `roundIcon` 共同指向同一 adaptive 资源，由 OEM 统一应用最终遮罩；Vivo/OriginOS 不使用带透明安全边距的自定义 legacy 或 round PNG 入口，避免启动器在外层补白色圆底。网页/favicon 资源保持独立，不随 Android 启动器适配而变化。
+- Touch/hover differences: 主要操作触控区域至少约 44px；顶部 LanguageSwitcher 采用与 35px 刷新按钮同高的紧凑分段控件，保留清晰的 focus/active 状态；Native 远程界面的连接菜单入口使用贴左边缘的 18×58px 窄拉手和 `›` 提示，轻点打开菜单，按住后可沿左边缘上下拖动，松手保存位置，并限制在安全显示区域内；同时保留左边缘右滑打开手势；hover 只作补充，不承载关键操作。
 
 ## Interaction states
 - Loading: skeleton/文字状态，保留上一次输出。
@@ -65,6 +67,8 @@
 - Error: 显示读取或发送失败，并保留重试入口；401 回到令牌解锁态。
 - Success: 发送后立即刷新输出，连接 badge 显示最近更新时间。
 - Disabled: 未选 pane、正在发送、dead pane 时禁用相关操作。
+- Native connection drawer: 不使用“其他服务器”占位项或“先选择再确认”的二段式切换；当前连接始终排在第一位并通过绿色边框与底色明确标记，其他连接保持未选中卡片样式；连接正常或具备可直接切换凭据时显示绿点，已知加载失败或缺少有效 Token 时显示红点，不使用容易被理解为进入下一级的三角箭头；新增连接使用独立加号入口。
+- Native saved connection identity: 每个已保存连接可设置最长 48 字符的本机显示名称；名称只影响列表标签，不修改服务器 URL、Token、排序或实际连接目标，留空恢复主机名。切换必须先立即打开目标连接，Token 验证在后台完成，迟到的验证结果只能影响它所属的连接。
 - Offline/slow network, if applicable: 轮询失败标记离线，恢复后自动继续；不伪造新输出。
 
 ## Content voice
@@ -72,6 +76,9 @@
 - Terminology: 中文中 session 用“会话”、window 用“窗口”、pane 用“Pane”；英文使用 session、window、pane；不把 pane 强行称为“聊天”。
 - Microcopy rules: 操作按钮使用动词；安全提示说明“只允许 tmux 目标和常用按键，不提供任意 shell API”。
 - Language behavior: 默认中文；用户选择保存到浏览器 `localStorage`；切换无需刷新，不重新请求会话，也不改变当前 session、pane、附件或输入内容。
+- Native language bridge: 远程页面嵌入 App 时只通过 `postMessage` 发布当前 `zh/en`；原生壳必须同时校验 iframe `source` 与当前服务器 `origin` 后再同步侧栏语言，不传递 Token 或其他会话数据。
+- Android launcher icon: 主符号必须处于圆形遮罩安全区，避免 Vivo 等强制圆形图标的启动器裁切终端卡片与口袋轮廓。
+- Native drawer actions: 新增、刷新、退出使用统一的中性色紧凑按钮、400 常规字重与 15px 线性 SVG 图标盒；三个图标共享水平基线、1.7px 描边和视觉重量，按钮高度保持约 44px。退出图标为空心方框，不依赖不同 Android 字体可能缺失的 Unicode 图符，也不使用红色危险态强调。
 
 ## Implementation constraints
 - Framework/styling system: Node.js 内置 `http`/`child_process`/`fs`；无运行时依赖；原生 HTML/CSS/JS。

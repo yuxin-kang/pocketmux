@@ -1,17 +1,23 @@
 import { normalizeRecentServers, rememberServer } from './connection.js';
 
 const MAX_CONNECTION_PROFILES = 5;
+const MAX_CONNECTION_NAME_LENGTH = 48;
+
+function normalizeConnectionName(value) {
+  if (typeof value !== 'string') return '';
+  return value.trim().replace(/\s+/g, ' ').slice(0, MAX_CONNECTION_NAME_LENGTH);
+}
 
 function normalizeConnectionProfiles(value) {
   if (!Array.isArray(value)) return [];
   const normalized = [];
   for (const item of value) {
     const serverUrl = typeof item === 'string' ? item : item?.serverUrl;
-    const token = typeof item === 'object' && typeof item?.token === 'string' ? item.token.trim() : '';
+    const name = typeof item === 'object' ? normalizeConnectionName(item?.name) : '';
     try {
       const normalizedServer = normalizeRecentServers([serverUrl])[0];
       if (!normalizedServer || normalized.some((profile) => profile.serverUrl === normalizedServer)) continue;
-      normalized.push({ serverUrl: normalizedServer, token });
+      normalized.push({ serverUrl: normalizedServer, ...(name ? { name } : {}) });
     } catch {
       // Ignore stale or malformed profiles.
     }
@@ -62,15 +68,35 @@ export function loadConnectionProfiles(storage, key, legacyKey) {
       return [];
     }
   }
-  return loadRecentServers(storage, legacyKey).map((serverUrl) => ({ serverUrl, token: '' }));
+  return loadRecentServers(storage, legacyKey).map((serverUrl) => ({ serverUrl }));
+}
+
+export function loadLegacyConnectionTokens(storage, key) {
+  try {
+    const value = JSON.parse(readStoredValue(storage, key, '[]'));
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item) => {
+      const token = typeof item?.token === 'string' ? item.token.trim() : '';
+      if (!token) return [];
+      const [profile] = normalizeConnectionProfiles([item]);
+      return profile ? [{ serverUrl: profile.serverUrl, token }] : [];
+    });
+  } catch {
+    return [];
+  }
 }
 
 export function rememberConnectionProfile(storage, key, current, connection) {
   const [profile] = normalizeConnectionProfiles([connection]);
   if (!profile) return { connectionProfiles: normalizeConnectionProfiles(current), persisted: false };
+  const normalizedCurrent = normalizeConnectionProfiles(current);
+  const existing = normalizedCurrent.find((item) => item.serverUrl === profile.serverUrl);
+  const rememberedProfile = existing?.name && !profile.name
+    ? { ...profile, name: existing.name }
+    : profile;
   const connectionProfiles = [
-    profile,
-    ...normalizeConnectionProfiles(current).filter((item) => item.serverUrl !== profile.serverUrl),
+    rememberedProfile,
+    ...normalizedCurrent.filter((item) => item.serverUrl !== profile.serverUrl),
   ].slice(0, MAX_CONNECTION_PROFILES);
   return {
     connectionProfiles,
@@ -78,12 +104,38 @@ export function rememberConnectionProfile(storage, key, current, connection) {
   };
 }
 
-export function saveConnectionProfiles(storage, key, connectionProfiles) {
-  return writeStoredValue(storage, key, JSON.stringify(normalizeConnectionProfiles(connectionProfiles)));
+export function saveConnectionProfiles(
+  storage,
+  key,
+  connectionProfiles,
+  pendingLegacyCredentials = [],
+) {
+  const pendingByServer = new Map(
+    pendingLegacyCredentials.flatMap((credential) => {
+      const token = typeof credential?.token === 'string' ? credential.token.trim() : '';
+      return token ? [[credential.serverUrl, token]] : [];
+    }),
+  );
+  const persistedProfiles = normalizeConnectionProfiles(connectionProfiles).map((profile) => {
+    const token = pendingByServer.get(profile.serverUrl);
+    return token ? { ...profile, token } : profile;
+  });
+  return writeStoredValue(storage, key, JSON.stringify(persistedProfiles));
 }
 
 export function removeConnectionProfile(current, serverUrl) {
   const normalizedServer = normalizeRecentServers([serverUrl])[0];
   if (!normalizedServer) return normalizeConnectionProfiles(current);
   return normalizeConnectionProfiles(current).filter((profile) => profile.serverUrl !== normalizedServer);
+}
+
+export function renameConnectionProfile(current, serverUrl, name) {
+  const normalizedServer = normalizeRecentServers([serverUrl])[0];
+  if (!normalizedServer) return normalizeConnectionProfiles(current);
+  const normalizedName = normalizeConnectionName(name);
+  return normalizeConnectionProfiles(current).map((profile) => {
+    if (profile.serverUrl !== normalizedServer) return profile;
+    const { name: _previousName, ...connection } = profile;
+    return normalizedName ? { ...connection, name: normalizedName } : connection;
+  });
 }

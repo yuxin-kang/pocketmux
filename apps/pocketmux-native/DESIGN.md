@@ -29,9 +29,9 @@ Pocketmux Native uses the existing Pocketmux identity: dark terminal surfaces, c
 
 1. Launcher header: product identity and Chinese/English selector.
 2. Connection launcher: server URL, optional token, transport feedback, and primary connect action.
-3. Recent connections: up to five normalized server profiles with locally saved tokens, open, and remove actions.
+3. Recent connections: up to five normalized server profiles, with validated tokens held separately in the operating-system credential store, plus open and remove actions.
 4. Remote shell: edge menu handle, normally hidden connection drawer, full-screen remote Pocketmux page, and a branded loading cover.
-5. Connection switcher: selectable saved connections plus an “other server” option, followed by a dedicated Switch action and a separate App Exit action.
+5. Connection switcher: saved connections switch directly when selected; separate Add, Refresh, and App Exit actions remain fixed at the bottom of the drawer.
 
 ## Design principles
 
@@ -87,7 +87,7 @@ Pocketmux Native uses the existing Pocketmux identity: dark terminal surfaces, c
 - HTTP on Android: reject it and direct the user to an HTTPS tunnel.
 - Connecting: cover the embedded page while its token bootstrap settles so the web login screen does not flash as an intermediate step.
 - Connected: reveal only the full-screen remote page; keep host, refresh, connection choices, Switch, and Exit controls in the hidden drawer. Reuse the launcher language choice without duplicating the selector.
-- Switching: saved connections validate their token through the Native layer and switch directly. Only HTTP 401/403 clears the rejected token and returns to the launcher with the server URL prefilled; network failures and other server errors retain the token.
+- Switching: saved connections validate their token through the Native layer and switch directly. Only an authenticated Pocketmux HTTP 401 response clears the rejected token and returns to the launcher with the server URL prefilled; proxy/tunnel failures, HTTP 403, and other server errors retain the token.
 - Exiting: the dedicated Exit action closes the Native App and never doubles as navigation or switching.
 - Storage unavailable: continue opening the server and show a non-blocking warning.
 - Returning after rejected credentials: close and clear the remote frame, clear the rejected saved token, prefill the server URL, and focus the token field.
@@ -103,9 +103,9 @@ Pocketmux Native uses the existing Pocketmux identity: dark terminal surfaces, c
 
 - Tauri 2 and vanilla HTML/CSS/JavaScript. Native token validation uses a narrowly scoped Rust HTTP client and does not modify the existing Pocketmux web application.
 - The local launcher remains the top-level document; the remote site loads in a sandboxed cross-origin frame.
-- The top-level local launcher may expose Tauri Core only to invoke the registered `exit_app` and `validate_token` commands; the capability set stays at `core:default` and the cross-origin sandboxed remote frame cannot access the parent API.
-- Persisted connection profiles live in the Native launcher's local storage. They are isolated from the cross-origin remote frame but are not an OS-keystore substitute; removing a connection deletes its saved token.
-- Token validation sends a Bearer token only to the selected server's same-origin `/api/health` endpoint, does not follow redirects, and treats only HTTP 401/403 as credential rejection.
+- The top-level local launcher may expose Tauri Core only to invoke the registered app lifecycle, validation, and credential commands; the capability set stays at `core:default` and the cross-origin sandboxed remote frame cannot access the parent API.
+- Persisted connection metadata lives in the Native launcher's local storage without tokens. Validated tokens use Windows Credential Manager or Android Keystore-backed credential storage; removing a connection deletes the matching credential.
+- Token validation sends a Bearer token only to the selected server's same-origin, base-path-preserving `/api/health` endpoint, does not follow redirects, and accepts success only when the response carries the Pocketmux product/protocol marker. Only HTTP 401 is a confirmed credential rejection.
 - Parent CSP permits HTTP(S) frames but no arbitrary network requests, remote scripts, objects, or native command bridge.
 - The reserved `tauri.localhost` host and any target equal to the launcher origin are rejected before framing, preserving the cross-origin sandbox boundary.
 - Android disables cleartext transport at both the launcher policy and manifest layers. Windows retains private/local HTTP support for trusted development networks.
@@ -115,4 +115,4 @@ Pocketmux Native uses the existing Pocketmux identity: dark terminal surfaces, c
 ## Open questions
 
 - Whether a later release should add QR scanning.
-- Whether a later release should migrate saved tokens from launcher local storage into the Windows Credential Manager and Android Keystore.
+- Whether a later release should add optional biometric gating before reading saved credentials.

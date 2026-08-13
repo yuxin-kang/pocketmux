@@ -5,16 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#101114">
     <meta name="description" content="Connect the Pocketmux app to a self-hosted Pocketmux server">
-    <link rel="icon" href="assets/pocketmux-icon.png" type="image/png">
-    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" href="assets/pocketmux-icon.png?v=20260812-pocket-terminal" type="image/png">
+    <link rel="stylesheet" href="styles.css?v=20260812-language-sync">
     <title>Pocketmux</title>
-    <script type="module" src="main.js" defer></script>
+    <script type="module" src="main.js?v=20260812-language-sync" defer></script>
   </head>
   <body>
     <div class="app-frame">
       <header class="topbar">
         <div class="brand-lockup">
-          <span class="brand-mark" aria-hidden="true"><img src="assets/pocketmux-icon.png" alt=""></span>
+          <span class="brand-mark" aria-hidden="true"><img src="assets/pocketmux-icon.png?v=20260812-pocket-terminal" alt=""></span>
           <div>
             <div class="product-name">pocketmux</div>
             <div class="product-subtitle" data-i18n="shell.subtitle">原生连接器</div>
@@ -75,14 +75,14 @@
 
       <section id="remote-shell" class="remote-shell is-hidden" aria-label="远程 Pocketmux" data-i18n-aria-label="remote.regionLabel">
         <button id="remote-menu-toggle" class="remote-menu-toggle" type="button" aria-expanded="false" aria-controls="remote-drawer" aria-label="打开连接菜单" title="打开连接菜单" data-i18n-aria-label="remote.menu" data-i18n-title="remote.menu">
-          <span aria-hidden="true">☰</span>
+          <span aria-hidden="true">›</span>
         </button>
         <div id="drawer-edge-target" class="drawer-edge-target" aria-hidden="true"></div>
         <div id="remote-drawer-backdrop" class="remote-drawer-backdrop is-hidden"></div>
         <aside id="remote-drawer" class="remote-drawer" aria-hidden="true" inert aria-labelledby="remote-drawer-title">
           <div class="drawer-header">
             <div class="brand-lockup">
-              <span class="brand-mark" aria-hidden="true"><img src="assets/pocketmux-icon.png" alt=""></span>
+              <span class="brand-mark" aria-hidden="true"><img src="assets/pocketmux-icon.png?v=20260812-pocket-terminal" alt=""></span>
               <div>
                 <div class="product-name">pocketmux</div>
                 <div class="product-subtitle" data-i18n="shell.subtitle">原生连接器</div>
@@ -91,30 +91,33 @@
             <button id="close-remote-drawer" class="drawer-close" type="button" aria-label="关闭连接菜单" title="关闭连接菜单" data-i18n-aria-label="remote.closeMenu" data-i18n-title="remote.closeMenu">×</button>
           </div>
           <div class="drawer-content">
-            <p class="eyebrow" data-i18n="remote.drawerTitle">当前连接</p>
+            <p class="eyebrow" data-i18n="remote.drawerTitle">连接</p>
             <h2 id="remote-drawer-title" class="drawer-title">Pocketmux</h2>
-            <div class="remote-context">
-              <span id="remote-status" class="remote-status" role="status" data-i18n="remote.loading">正在连接</span>
-              <strong id="remote-server" class="remote-server"></strong>
-              <span id="remote-notice" class="remote-notice" role="status"></span>
-            </div>
+            <span id="remote-notice" class="remote-notice" role="status"></span>
 
-            <section class="switch-panel" aria-labelledby="switch-panel-title">
-              <p id="switch-panel-title" class="switch-title" data-i18n="remote.switchTitle">选择其他连接</p>
-              <div id="switch-target-list" class="switch-target-list" role="radiogroup" aria-label="可切换连接" data-i18n-aria-label="remote.switchTargets"></div>
-              <button id="switch-connection" class="drawer-action drawer-action-switch" type="button" disabled>
-                <span aria-hidden="true">⇄</span>
-                <span data-i18n="remote.switchAction">切换</span>
-              </button>
+            <section class="connection-panel" aria-labelledby="connection-panel-title">
+              <p id="connection-panel-title" class="connection-list-title" data-i18n="remote.connectionListTitle">已保存连接</p>
+              <div id="switch-target-list" class="connection-list" role="list" aria-label="连接列表" data-i18n-aria-label="remote.switchTargets"></div>
             </section>
 
-            <div class="drawer-actions">
-              <button id="refresh-remote" class="drawer-action" type="button" aria-label="刷新远程页面" title="刷新远程页面" data-i18n-aria-label="remote.refresh" data-i18n-title="remote.refresh">
-                <span aria-hidden="true">↻</span>
-                <span data-i18n="remote.refresh">刷新远程页面</span>
+            <div class="drawer-actions" aria-label="连接操作" data-i18n-aria-label="remote.actions">
+              <button id="add-connection" class="drawer-action" type="button" aria-label="新增连接" title="新增连接" data-i18n-aria-label="remote.addAction" data-i18n-title="remote.addAction">
+                <svg class="drawer-action-icon drawer-add-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14"></path>
+                </svg>
+                <span data-i18n="remote.addAction">新增</span>
               </button>
-              <button id="exit-app" class="drawer-action drawer-action-exit" type="button" aria-label="退出 Pocketmux" title="退出 Pocketmux" data-i18n-aria-label="remote.exitAction" data-i18n-title="remote.exitAction">
-                <span aria-hidden="true">⏻</span>
+              <button id="refresh-remote" class="drawer-action" type="button" aria-label="刷新远程页面" title="刷新远程页面" data-i18n-aria-label="remote.refresh" data-i18n-title="remote.refresh">
+                <svg class="drawer-action-icon drawer-refresh-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"></path>
+                  <path d="M21 3v5h-5"></path>
+                </svg>
+                <span data-i18n="remote.refresh">刷新</span>
+              </button>
+              <button id="exit-app" class="drawer-action" type="button" aria-label="退出 Pocketmux" title="退出 Pocketmux" data-i18n-aria-label="remote.exitAction" data-i18n-title="remote.exitAction">
+                <svg class="drawer-action-icon exit-outline-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="5" y="5" width="14" height="14" rx="0.5"></rect>
+                </svg>
                 <span data-i18n="remote.exitAction">退出</span>
               </button>
             </div>
@@ -122,7 +125,7 @@
         </aside>
 
         <div id="remote-loading-cover" class="remote-loading-cover" role="status" aria-live="polite">
-          <span class="loading-brand" aria-hidden="true"><img src="assets/pocketmux-icon.png" alt=""></span>
+          <span class="loading-brand" aria-hidden="true"><img src="assets/pocketmux-icon.png?v=20260812-pocket-terminal" alt=""></span>
           <span id="remote-loading-spinner" class="remote-loading-spinner" aria-hidden="true"></span>
           <strong id="remote-loading-title" class="remote-loading-title">正在打开 Pocketmux</strong>
           <span id="remote-loading-hint" class="remote-loading-hint">正在验证连接并加载远程界面…</span>
@@ -130,6 +133,21 @@
         </div>
         <iframe id="remote-frame" class="remote-frame" src="about:blank" title="Pocketmux 远程界面" data-i18n-title="remote.frameTitle" sandbox="allow-scripts allow-forms allow-same-origin allow-downloads allow-modals" referrerpolicy="no-referrer"></iframe>
       </section>
+
+      <dialog id="connection-name-dialog" class="connection-name-dialog" aria-labelledby="connection-name-title">
+        <form id="connection-name-form" class="connection-name-form" method="dialog">
+          <p class="eyebrow" data-i18n="rename.eyebrow">连接名称</p>
+          <h2 id="connection-name-title" data-i18n="rename.title">重命名连接</h2>
+          <p id="connection-name-server" class="connection-name-server"></p>
+          <label for="connection-name" data-i18n="rename.label">自定义名称</label>
+          <input id="connection-name" type="text" maxlength="48" autocomplete="off" data-i18n-placeholder="rename.placeholder" placeholder="例如：训练主机">
+          <p class="field-hint" data-i18n="rename.hint">留空会恢复显示服务器主机名。</p>
+          <div class="connection-name-actions">
+            <button id="cancel-connection-name" class="secondary-button" type="button" data-i18n="rename.cancel">取消</button>
+            <button class="primary-button" type="submit" data-i18n="rename.save">保存</button>
+          </div>
+        </form>
+      </dialog>
 
       <footer id="app-footer" class="app-footer">
         <span class="status-dot"></span>
