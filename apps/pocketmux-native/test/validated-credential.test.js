@@ -3,39 +3,25 @@ import test from 'node:test';
 
 import { persistValidatedCredential } from '../src/validated-credential.js';
 
-function deferred() {
-  let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
-}
-
-test('waits for legacy migration before a newly validated token is persisted', async () => {
-  const initialization = deferred();
+test('persists a newly entered token without waiting for app initialization', async () => {
   const writes = [];
-  const persistence = persistValidatedCredential({
-    initialization: initialization.promise,
+  const result = await persistValidatedCredential({
     isCurrent: () => true,
     persistMetadata: () => { writes.push('metadata'); return true; },
     persistCredential: async () => { writes.push('new-token'); return true; },
   });
 
-  await Promise.resolve();
-  assert.deepEqual(writes, []);
-  writes.push('legacy-token');
-  initialization.resolve();
-
-  assert.deepEqual(await persistence, {
+  assert.deepEqual(result, {
     cancelled: false,
     metadataPersisted: true,
     credentialPersisted: true,
   });
-  assert.deepEqual(writes, ['legacy-token', 'metadata', 'new-token']);
+  assert.deepEqual(writes, ['metadata', 'new-token']);
 });
 
 test('does not create an orphan credential when metadata storage fails', async () => {
   let credentialWrites = 0;
   const result = await persistValidatedCredential({
-    initialization: Promise.resolve(),
     isCurrent: () => true,
     persistMetadata: () => false,
     persistCredential: async () => { credentialWrites += 1; return true; },
@@ -53,7 +39,6 @@ test('does not start credential persistence after validation is superseded', asy
   let current = true;
   let credentialWrites = 0;
   const result = await persistValidatedCredential({
-    initialization: Promise.resolve(),
     isCurrent: () => current,
     persistMetadata: () => {
       current = false;
@@ -70,20 +55,13 @@ test('does not start credential persistence after validation is superseded', asy
   });
 });
 
-test('does not persist a credential for a connection superseded during initialization', async () => {
-  const initialization = deferred();
-  let current = true;
+test('does not persist a credential for an already superseded connection', async () => {
   let writes = 0;
-  const persistence = persistValidatedCredential({
-    initialization: initialization.promise,
-    isCurrent: () => current,
+  const result = await persistValidatedCredential({
+    isCurrent: () => false,
     persistMetadata: () => { writes += 1; return true; },
     persistCredential: async () => { writes += 1; return true; },
   });
-
-  current = false;
-  initialization.resolve();
-  const result = await persistence;
 
   assert.equal(result.cancelled, true);
   assert.equal(writes, 0);

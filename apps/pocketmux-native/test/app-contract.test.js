@@ -87,8 +87,8 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   const capability = JSON.parse(capabilityText);
 
   assert.match(html, /连接后会直接打开原有网页界面/);
-  assert.match(html, /styles\.css\?v=20260813-native-auth-bridge/);
-  assert.match(html, /main\.js\?v=20260813-native-auth-bridge/);
+  assert.match(html, /styles\.css\?v=20260813-token-persistence-1019/);
+  assert.match(html, /main\.js\?v=20260813-token-persistence-1019/);
   assert.match(html, /id="remote-menu-toggle"[^>]+aria-expanded="false"[\s\S]*?<span aria-hidden="true">›<\/span>/);
   assert.match(html, /id="remote-drawer"[^>]+aria-hidden="true"[^>]+inert/);
   assert.match(html, /id="refresh-remote"/);
@@ -152,14 +152,14 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /invoke\('validate_token'/);
   assert.match(
     main,
-    /const operation = showRemote\(connection\.serverUrl, connection\.targetUrl,[\s\S]*?void monitorConnectionValidation\(connection, operation/,
+    /const operation = connectionOperations\.begin\(\)[\s\S]*?showRemote\(connection\.serverUrl, connection\.targetUrl,[\s\S]*?operation,[\s\S]*?void monitorConnectionValidation\(connection, operation/,
   );
   assert.match(main, /async function monitorConnectionValidation\([\s\S]*?if \(!connectionOperations\.isCurrent\(operation\)\) return validation;/);
   assert.doesNotMatch(main, /const validationPromise = validateSavedToken\(connection\)/);
   assert.match(main, /validation === 'valid'[\s\S]*?persistConnectionAttempt\(attempt\)/);
   assert.match(main, /migrateLegacyCredentials\(legacyConnectionTokens/);
-  assert.match(main, /const durableLegacyRecord = \[\.\.\.legacyConnectionTokens\]/);
-  assert.match(main, /legacyConnectionTokens = migration\.complete[\s\S]*?durableLegacyRecord\.filter/);
+  assert.match(main, /retainCurrentLegacyCredentials\([\s\S]*?legacyConnectionTokens,[\s\S]*?migration\.remaining/);
+  assert.doesNotMatch(main, /const durableLegacyRecord = \[\.\.\.legacyConnectionTokens\]/);
   const rememberMetadataSource = main.slice(
     main.indexOf('function rememberConnectionMetadata('),
     main.indexOf('function nativeInvoke('),
@@ -172,7 +172,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(storeTokenSource, /await invoke\('set_connection_token'/);
   assert.match(storeTokenSource, /legacyConnectionTokens = legacyConnectionTokens\.filter/);
   assert.match(storeTokenSource, /if \(!persistConnectionProfiles\(\)\)/);
-  assert.match(main, /const activeServers = new Set\(connectionProfiles\.map\([\s\S]*?durableLegacyRecord\.filter\([\s\S]*?activeServers\.has\(item\.serverUrl\)/);
+  assert.match(main, /const activeServers = new Set\(connectionProfiles\.map\([\s\S]*?retainCurrentLegacyCredentials\([\s\S]*?activeServers\.has\(item\.serverUrl\)/);
   assert.match(main, /async function storeLegacyConnectionToken\(connection\)/);
   assert.match(main, /if \(!profileForServer\(connection\.serverUrl\) \|\| !pendingLegacyToken\) return true/);
   assert.match(main, /if \(connectionTokens\.has\(connection\.serverUrl\)\) return true/);
@@ -186,7 +186,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /async function restoreMostRecentConnection\(\)/);
   assert.match(main, /const token = profile \? connectionTokens\.get\(profile\.serverUrl\) : ''/);
   assert.match(main, /navigateToServer\(profile\.serverUrl, token, \{ pushHistory: false \}\)/);
-  assert.match(main, /await initializeShellSession\(\)[\s\S]*?await initializeNativeApp\(\)/);
+  assert.match(main, /await ensureShellSession\(\)[\s\S]*?await initializeNativeApp\(\)/);
   assert.match(main, /window\.crypto\.getRandomValues\(bytes\)/);
   assert.match(main, /invoke\('register_shell_session', \{ sessionToken \}\)/);
   assert.match(main, /sessionToken: shellSessionToken/);
@@ -251,29 +251,31 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.windows[0].generalAutofillEnabled, false);
   assert.equal(config.identifier, 'io.github.yuxinkang.pocketmux');
-  assert.equal(config.bundle.android.versionCode, 1018);
+  assert.equal(config.bundle.android.versionCode, 1019);
   assert.match(config.app.security.csp, /frame-src http: https:/);
   assert.deepEqual(capability.permissions, ['core:default']);
   assert.equal('remote' in capability, false);
 });
 
-test('records a connection before asynchronous validation can be superseded', async () => {
+test('persists a connection before remote navigation can supersede it', async () => {
   const main = await readFile(path.join(root, 'src', 'main.js'), 'utf8');
   const navigateSource = main.slice(
     main.indexOf('async function navigateToServer('),
     main.indexOf('async function restoreMostRecentConnection('),
   );
   const rememberIndex = navigateSource.indexOf('rememberConnectionMetadata(connection)');
+  const storeIndex = navigateSource.indexOf('persistCredential: () => storeConnectionToken(connection');
   const showRemoteIndex = navigateSource.indexOf('showRemote(connection.serverUrl, connection.targetUrl');
 
   assert.ok(rememberIndex >= 0, 'navigation must record token-free connection metadata');
+  assert.ok(storeIndex >= 0, 'navigation must persist the token');
   assert.ok(showRemoteIndex >= 0, 'navigation must open the remote connection');
   assert.ok(
-    rememberIndex < showRemoteIndex,
-    'connection metadata must be recorded before the remote session can be superseded',
+    rememberIndex < storeIndex && storeIndex < showRemoteIndex,
+    'metadata and token must be durable before the remote session opens',
   );
   assert.match(navigateSource, /renderRecentServers\(\)/);
-  assert.match(navigateSource, /storageWarning: !metadataPersisted/);
+  assert.match(navigateSource, /storageWarning: !metadataPersisted \|\| !credentialPersisted/);
 });
 
 test('allows the active connection to be renamed before profile hydration completes', async () => {
@@ -312,8 +314,11 @@ test('persists a validated token after the user switches to another server', asy
   assert.match(main, /REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded'/);
   assert.match(main, /event\.source !== elements\.remoteFrame\.contentWindow/);
   assert.match(main, /connectionAttemptForMessage/);
+  assert.match(main, /if \(attempt\.authentication\.webAuthenticated && attempt\.persistenceState !== 'failed'\) return/);
+  assert.match(main, /attempt\.persistencePromise === persistencePromise[\s\S]*?attempt\.persistencePromise = null/);
   assert.match(validationSource, /if \(!connectionOperations\.isCurrent\(operation\)\) return validation;/);
   assert.match(validatedCredential, /if \(!isCurrent\(\)\) \{[\s\S]*credentialPersisted: false/);
+  assert.doesNotMatch(validatedCredential, /initialization/);
 });
 
 test('does not perform a synchronous keyring readback during token writes', async () => {
@@ -352,14 +357,14 @@ test('diagnoses credential persistence without logging access tokens', async () 
   assert.doesNotMatch(rust, /log::(?:info|warn|error)!\([^;]*expected_token/);
 });
 
-test('only acknowledges native authentication after the remote shell initializes', async () => {
+test('acknowledges native authentication immediately after health succeeds', async () => {
   const browserApp = await readFile(path.join(root, '..', '..', 'public', 'app.js'), 'utf8');
   const unlockSource = browserApp.slice(
     browserApp.indexOf('async function unlock('),
     browserApp.indexOf("elements.tokenForm.addEventListener('submit'"),
   );
+  assert.ok(unlockSource.indexOf('publishAuthenticationSucceededToNativeShell();') < unlockSource.indexOf('showShell();'));
   assert.ok(unlockSource.indexOf('showShell();') < unlockSource.indexOf('await refreshSessions();'));
-  assert.ok(unlockSource.indexOf('await refreshSessions();') < unlockSource.indexOf('publishAuthenticationSucceededToNativeShell();'));
   assert.match(unlockSource, /if \(state\.token === unlockToken\)/);
 });
 

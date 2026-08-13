@@ -1,3 +1,12 @@
+export function retainCurrentLegacyCredentials(currentCredentials, remainingCredentials) {
+  return currentCredentials.filter((current) => remainingCredentials.some(
+    (remaining) => (
+      remaining.serverUrl === current.serverUrl
+      && remaining.token === current.token
+    ),
+  ));
+}
+
 export async function migrateLegacyCredentials(
   legacyCredentials,
   {

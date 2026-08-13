@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#101114">
     <meta name="description" content="Connect the Pocketmux app to a self-hosted Pocketmux server">
     <link rel="icon" href="assets/pocketmux-icon.png?v=20260812-pocket-terminal" type="image/png">
-    <link rel="stylesheet" href="styles.css?v=20260813-native-auth-bridge-1018">
+    <link rel="stylesheet" href="styles.css?v=20260813-token-persistence-1019">
     <title>Pocketmux</title>
-    <script type="module" src="main.js?v=20260813-native-auth-bridge-1018" defer></script>
+    <script type="module" src="main.js?v=20260813-token-persistence-1019" defer></script>
   </head>
   <body>
     <div class="app-frame">
@@ -56,7 +56,7 @@
 
           <div class="privacy-note">
             <span class="privacy-icon" aria-hidden="true">◇</span>
-            <p data-i18n="connect.privacy">App 只会在本机保存验证成功的服务器地址和 Token；错误或不可达的地址不会写入连接记录。</p>
+            <p data-i18n="connect.privacy">App 仅在本机安全保存连接地址和 Token；服务器确认失效后会移除对应 Token。</p>
           </div>
         </section>
 

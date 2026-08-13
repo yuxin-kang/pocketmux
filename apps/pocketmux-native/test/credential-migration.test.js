@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { migrateLegacyCredentials } from '../src/credential-migration.js';
+import {
+  migrateLegacyCredentials,
+  retainCurrentLegacyCredentials,
+} from '../src/credential-migration.js';
 import {
   loadConnectionProfiles,
   loadLegacyConnectionTokens,
@@ -35,6 +38,17 @@ function memoryStorage() {
     },
   };
 }
+
+test('an incomplete migration cannot restore plaintext removed by a concurrent secure write', () => {
+  const replaced = credential('https://one.example/', 'old-token');
+  const unresolved = credential('https://two.example/', 'pending-token');
+  const current = [unresolved];
+
+  assert.deepEqual(
+    retainCurrentLegacyCredentials(current, [replaced, unresolved]),
+    [unresolved],
+  );
+});
 
 test('removes plaintext credentials only after the whole migration succeeds', async () => {
   const first = credential('https://one.example/', 'one');

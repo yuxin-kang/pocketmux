@@ -1434,9 +1434,12 @@
         throw responseError({}, 502, 'error.requestFailed');
       }
       if (!nativeBootstrap) localStorage.setItem('tmux-relay-token', state.token);
+      // The health response is the authoritative authentication result. Notify the
+      // native shell before loading optional session data so a slow/broken session
+      // request cannot prevent the token from being persisted.
+      if (state.token === unlockToken) publishAuthenticationSucceededToNativeShell();
       showShell();
       await refreshSessions();
-      if (state.token === unlockToken) publishAuthenticationSucceededToNativeShell();
     } catch (error) {
       state.token = '';
       if (error.unauthorized && !nativeBootstrap) localStorage.removeItem('tmux-relay-token');

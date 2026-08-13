@@ -1,10 +1,8 @@
 export async function persistValidatedCredential({
-  initialization,
   isCurrent,
   persistMetadata,
   persistCredential,
 }) {
-  await initialization;
   if (!isCurrent()) {
     return { cancelled: true, metadataPersisted: false, credentialPersisted: false };
   }

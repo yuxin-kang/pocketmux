@@ -13,8 +13,12 @@ import {
   shouldDeferNativeInvalidation,
   shouldIgnoreNativeInvalidation,
 } from './connection-authentication.js';
-import { migrateLegacyCredentials } from './credential-migration.js';
+import {
+  migrateLegacyCredentials,
+  retainCurrentLegacyCredentials,
+} from './credential-migration.js';
 import { initializeConnections } from './connection-initialization.js';
+import { persistBeforeRemoteNavigation } from './connection-navigation.js';
 import { rejectCredential } from './rejected-credential.js';
 import { shouldBeginDrawerSwipe } from './drawer-gesture.js';
 import { errorMessageKey } from './error-state.js';
@@ -25,6 +29,7 @@ import {
   normalizeHandlePosition,
 } from './floating-handle.js';
 import { messages, normalizeLanguage } from './i18n.js';
+import { createNativeShellSession } from './native-shell-session.js';
 import {
   normalizeNativeViewportHeight,
   resolveRemoteViewportHeight,
@@ -49,6 +54,7 @@ const REMOTE_HANDLE_POSITION_KEY = 'pocketmux-native-remote-handle-position-v1';
 const REMOTE_HANDLE_HEIGHT_PX = 58;
 const REMOTE_HANDLE_MARGIN_PX = 12;
 const REMOTE_LOAD_TIMEOUT_MS = 15000;
+const CREDENTIAL_READ_TIMEOUT_MS = 5000;
 const REMOTE_LANGUAGE_MESSAGE_TYPE = 'pocketmux:language';
 const REMOTE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required';
 const REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded';
@@ -133,7 +139,6 @@ const connectionTokens = new Map();
 const authenticatedTargets = new Map();
 const connectionAttempts = new Map();
 let credentialMutationQueue = Promise.resolve();
-let initializationPromise = Promise.resolve();
 let shellSessionToken = '';
 
 function authDebug(event, details = {}) {
@@ -253,6 +258,25 @@ async function initializeShellSession() {
   shellSessionToken = sessionToken;
 }
 
+const nativeShellSession = createNativeShellSession({
+  initialize: initializeShellSession,
+  getInvoke: nativeInvoke,
+  onInitializationError: (error) => {
+    authDebug('shell-registration-failed', { error: String(error) });
+  },
+});
+
+const ensureShellSession = nativeShellSession.ensure;
+const nativeCredentialInvoke = nativeShellSession.readyInvoke;
+
+function withTimeout(promise, timeoutMs) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = window.setTimeout(() => reject(new Error('credential-read-timeout')), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => window.clearTimeout(timer));
+}
+
 function queueCredentialMutation(mutation) {
   const result = credentialMutationQueue.then(mutation, mutation);
   credentialMutationQueue = result.catch(() => undefined);
@@ -265,7 +289,7 @@ async function storeConnectionToken(connection, { isCurrent = () => true } = {})
       authDebug('write-skipped-stale', { serverUrl: connection.serverUrl });
       return false;
     }
-    const invoke = nativeInvoke();
+    const invoke = await nativeCredentialInvoke();
     if (!invoke) {
       authDebug('write-skipped-native-unavailable', { serverUrl: connection.serverUrl });
       return false;
@@ -321,16 +345,23 @@ function persistConnectionAttempt(attempt) {
   if (!connectionValidations.isCurrent(attempt.validationAttempt)) {
     return Promise.resolve({ cancelled: true, metadataPersisted: false, credentialPersisted: false });
   }
-  if (attempt.persistencePromise) return attempt.persistencePromise;
+  if (attempt.persistenceState === 'pending' && attempt.persistencePromise) {
+    return attempt.persistencePromise;
+  }
 
   attempt.persistenceState = 'pending';
-  attempt.persistencePromise = persistValidatedCredential({
-    initialization: initializationPromise,
+  const persistencePromise = persistValidatedCredential({
     isCurrent: () => connectionValidations.isCurrent(attempt.validationAttempt),
     persistMetadata: () => persistValidatedConnectionMetadata(attempt.connection),
     persistCredential: () => storeConnectionToken(attempt.connection, {
       isCurrent: () => connectionValidations.isCurrent(attempt.validationAttempt),
     }),
+  }).catch((error) => {
+    authDebug('persistence-failed', {
+      serverUrl: attempt.connection.serverUrl,
+      error: String(error),
+    });
+    return { cancelled: false, metadataPersisted: false, credentialPersisted: false };
   }).then((persistence) => {
     authDebug('persistence-result', {
       serverUrl: attempt.connection.serverUrl,
@@ -344,8 +375,13 @@ function persistConnectionAttempt(attempt) {
       : (persistence.cancelled ? 'cancelled' : 'failed');
     renderRecentServers();
     return persistence;
+  }).finally(() => {
+    if (attempt.persistencePromise === persistencePromise && attempt.persistenceState !== 'saved') {
+      attempt.persistencePromise = null;
+    }
   });
-  return attempt.persistencePromise;
+  attempt.persistencePromise = persistencePromise;
+  return persistencePromise;
 }
 
 function markConnectionAttemptAuthenticated(attempt) {
@@ -369,7 +405,7 @@ async function storeLegacyConnectionToken(connection) {
     );
     if (!profileForServer(connection.serverUrl) || !pendingLegacyToken) return true;
     if (connectionTokens.has(connection.serverUrl)) return true;
-    const invoke = nativeInvoke();
+    const invoke = await nativeCredentialInvoke();
     if (!invoke) throw new Error('credential-store-unavailable');
     await invoke('set_connection_token', {
       serverUrl: connection.serverUrl,
@@ -383,7 +419,7 @@ async function storeLegacyConnectionToken(connection) {
 
 async function forgetRejectedToken(connection) {
   return queueCredentialMutation(async () => {
-    const invoke = nativeInvoke();
+    const invoke = await nativeCredentialInvoke();
     return rejectCredential({
       expectedToken: connection.token,
       currentToken: connectionTokens.get(connection.serverUrl),
@@ -408,7 +444,7 @@ async function forgetRejectedToken(connection) {
 
 async function deleteConnectionToken(serverUrl) {
   return queueCredentialMutation(async () => {
-    const invoke = nativeInvoke();
+    const invoke = await nativeCredentialInvoke();
     if (!invoke) return false;
     try {
       await invoke('delete_connection_token', { serverUrl });
@@ -423,7 +459,7 @@ async function deleteConnectionToken(serverUrl) {
 
 async function hydrateConnectionTokens() {
   return queueCredentialMutation(async () => {
-    const invoke = nativeInvoke();
+    const invoke = await nativeCredentialInvoke();
     if (!invoke) {
       authDebug('read-skipped-native-unavailable');
       return { complete: false, states: new Map() };
@@ -434,7 +470,10 @@ async function hydrateConnectionTokens() {
     }
     const serverUrls = connectionProfiles.map((profile) => profile.serverUrl);
     try {
-      const results = await invoke('get_connection_tokens', { serverUrls });
+      const results = await withTimeout(
+        invoke('get_connection_tokens', { serverUrls }),
+        CREDENTIAL_READ_TIMEOUT_MS,
+      );
       let complete = true;
       const states = new Map();
       serverUrls.forEach((serverUrl, index) => {
@@ -471,7 +510,6 @@ async function hydrateConnectionTokens() {
 }
 
 async function migrateLegacyConnectionTokens(existingCredentialStates) {
-  const durableLegacyRecord = [...legacyConnectionTokens];
   const migration = await migrateLegacyCredentials(legacyConnectionTokens, {
     buildConnection: buildRemoteConnection,
     credentialState: async (connection) => existingCredentialStates.get(connection.serverUrl) || 'unknown',
@@ -479,18 +517,23 @@ async function migrateLegacyConnectionTokens(existingCredentialStates) {
     storeCredential: storeLegacyConnectionToken,
     persistMigrationProgress: (remaining) => {
       const activeServers = new Set(connectionProfiles.map((profile) => profile.serverUrl));
-      const previous = connectionProfiles;
-      legacyConnectionTokens = remaining.filter((item) => activeServers.has(item.serverUrl));
+      const previousProfiles = connectionProfiles;
+      const previousLegacyConnectionTokens = legacyConnectionTokens;
+      legacyConnectionTokens = retainCurrentLegacyCredentials(
+        legacyConnectionTokens,
+        remaining,
+      ).filter((item) => activeServers.has(item.serverUrl));
       if (persistConnectionProfiles()) return true;
-      connectionProfiles = previous;
-      legacyConnectionTokens = durableLegacyRecord;
+      connectionProfiles = previousProfiles;
+      legacyConnectionTokens = previousLegacyConnectionTokens;
       return false;
     },
   });
   const activeServers = new Set(connectionProfiles.map((profile) => profile.serverUrl));
-  legacyConnectionTokens = migration.complete
-    ? []
-    : durableLegacyRecord.filter((item) => activeServers.has(item.serverUrl));
+  legacyConnectionTokens = retainCurrentLegacyCredentials(
+    legacyConnectionTokens,
+    migration.remaining,
+  ).filter((item) => activeServers.has(item.serverUrl));
   for (const failure of migration.failures) {
     console.warn('Pocketmux credential migration did not complete', {
       serverUrl: failure.serverUrl,
@@ -502,7 +545,7 @@ async function migrateLegacyConnectionTokens(existingCredentialStates) {
 }
 
 async function validateSavedToken(connection) {
-  const invoke = nativeInvoke();
+  const invoke = await nativeCredentialInvoke();
   if (!invoke) return 'unknown';
   try {
     return await invoke('validate_token', {
@@ -574,9 +617,10 @@ function receiveRemoteLanguage(event) {
   const attempt = connectionAttemptForMessage(event);
   if (event.data?.type === REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE) {
     if (!attempt || !connectionValidations.isCurrent(attempt.validationAttempt)) return;
-    if (attempt.authenticated) return;
-    attempt.authentication = recordWebAuthentication(attempt.authentication);
-    attempt.authenticated = true;
+    if (attempt.authentication.webAuthenticated && attempt.persistenceState !== 'failed') return;
+    if (!attempt.authentication.webAuthenticated) {
+      attempt.authentication = recordWebAuthentication(attempt.authentication);
+    }
     authDebug('web-authenticated', { serverUrl: attempt.connection.serverUrl });
     markConnectionAttemptAuthenticated(attempt);
     void persistConnectionAttempt(attempt)
@@ -928,8 +972,11 @@ function setRemoteState(nextState, operation = connectionOperations.current()) {
   }
 }
 
-function showRemote(serverUrl, targetUrl, { pushHistory = true, storageWarning = false } = {}) {
-  const operation = connectionOperations.begin();
+function showRemote(
+  serverUrl,
+  targetUrl,
+  { operation = connectionOperations.begin(), pushHistory = true, storageWarning = false } = {},
+) {
   clearRemoteLoadTimer();
   clearRemoteRevealTimer();
   remoteSession = beginRemoteSession(serverUrl, targetUrl, storageWarning);
@@ -1037,16 +1084,31 @@ async function navigateToServer(serverInput, tokenInput = '', { pushHistory = tr
     ? candidate
     : buildRemoteConnection(candidate.serverUrl, savedToken);
   requireAccessToken(connection);
+  const operation = connectionOperations.begin();
   elements.connectButton.disabled = true;
   elements.connectButton.classList.add('is-loading');
   elements.serverUrl.value = connection.serverUrl;
   elements.accessToken.value = '';
   const validationAttempt = connectionValidations.begin(connection.serverUrl);
+  const isCurrent = () => (
+    connectionOperations.isCurrent(operation)
+    && connectionValidations.isCurrent(validationAttempt)
+  );
   const metadataPersisted = rememberConnectionMetadata(connection);
+  const credentialAlreadyPersisted = connectionTokens.get(connection.serverUrl) === connection.token;
+  const initialPersistence = await persistBeforeRemoteNavigation({
+    metadataPersisted,
+    credentialAlreadyPersisted,
+    persistCredential: () => storeConnectionToken(connection, { isCurrent }),
+    isCurrent,
+  });
+  if (initialPersistence.cancelled) return false;
+  const { credentialPersisted } = initialPersistence;
   renderRecentServers();
-  const operation = showRemote(connection.serverUrl, connection.targetUrl, {
+  showRemote(connection.serverUrl, connection.targetUrl, {
+    operation,
     pushHistory,
-    storageWarning: !metadataPersisted,
+    storageWarning: !metadataPersisted || !credentialPersisted,
   });
   const attempt = {
     connection,
@@ -1055,9 +1117,9 @@ async function navigateToServer(serverInput, tokenInput = '', { pushHistory = tr
     frameWindow: elements.remoteFrame.contentWindow,
     authentication: beginConnectionAuthentication(),
     authenticated: false,
-    persistenceState: 'idle',
+    persistenceState: credentialPersisted ? 'saved' : 'failed',
     persistencePromise: null,
-    persistenceResult: null,
+    persistenceResult: initialPersistence,
   };
   connectionAttempts.set(connection.serverUrl, attempt);
   rebuildAuthenticatedTargets();
@@ -1419,7 +1481,7 @@ async function initializeNativeApp() {
 
 async function bootNativeApp() {
   try {
-    await initializeShellSession();
+    await ensureShellSession();
     await initializeNativeApp();
   } catch {
     initializationSettled = true;
@@ -1427,5 +1489,4 @@ async function bootNativeApp() {
   }
 }
 
-initializationPromise = bootNativeApp();
-void initializationPromise;
+void bootNativeApp();
