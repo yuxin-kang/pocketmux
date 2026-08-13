@@ -1,6 +1,6 @@
 [package]
 name = "pocketmux-native"
-version = "0.1.0"
+version = "1.0.0"
 description = "Pocketmux native connection shell for Windows and Android"
 authors = ["Pocketmux contributors"]
 edition = "2021"
