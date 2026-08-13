@@ -1,6 +1,6 @@
 {
   "name": "tmux-relay",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "A phone-friendly, token-protected tmux and Codex console.",
   "type": "commonjs",
