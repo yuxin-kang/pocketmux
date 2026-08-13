@@ -54,6 +54,7 @@ const REMOTE_HANDLE_POSITION_KEY = 'pocketmux-native-remote-handle-position-v1';
 const REMOTE_HANDLE_HEIGHT_PX = 58;
 const REMOTE_HANDLE_MARGIN_PX = 12;
 const REMOTE_LOAD_TIMEOUT_MS = 15000;
+const REMOTE_REVEAL_DELAY_MS = 400;
 const CREDENTIAL_READ_TIMEOUT_MS = 5000;
 const REMOTE_LANGUAGE_MESSAGE_TYPE = 'pocketmux:language';
 const REMOTE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required';
@@ -945,12 +946,13 @@ function renderRemoteState() {
   if (!remoteSession) return;
   const loading = remoteSession.state === 'loading';
   const failed = remoteSession.state === 'failed';
+  const visible = remoteSession.state === 'interactive' || remoteSession.state === 'loaded';
   elements.remoteShell.setAttribute('aria-busy', String(loading));
   elements.refreshRemote.disabled = loading;
   elements.remoteNotice.textContent = remoteSession.state === 'failed'
     ? text('remote.timeout')
     : (remoteSession.storageWarning ? text('error.storageUnavailable') : '');
-  elements.remoteLoadingCover.classList.toggle('is-hidden', remoteSession.state === 'loaded');
+  elements.remoteLoadingCover.classList.toggle('is-hidden', visible);
   elements.remoteLoadingSpinner.classList.toggle('is-hidden', failed);
   elements.retryRemote.classList.toggle('is-hidden', !failed);
   elements.remoteLoadingTitle.textContent = text(failed ? 'remote.failedTitle' : 'remote.loadingTitle');
@@ -995,8 +997,13 @@ function showRemote(
     if (
       !connectionOperations.isCurrent(operation)
       || elements.remoteShell.classList.contains('is-hidden')
+      || nextFrame.getAttribute('src') !== targetUrl
     ) return;
     clearRemoteRevealTimer();
+    remoteRevealTimer = window.setTimeout(() => {
+      remoteRevealTimer = null;
+      if (remoteSession?.state === 'loading') setRemoteState('interactive', operation);
+    }, REMOTE_REVEAL_DELAY_MS);
   }, { once: true });
   nextFrame.addEventListener('error', () => setRemoteState('failed', operation), { once: true });
   elements.remoteFrame.replaceWith(nextFrame);

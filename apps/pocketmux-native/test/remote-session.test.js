@@ -22,10 +22,12 @@ test('preserves connection identity and storage warnings across load state trans
   );
   const failed = transitionRemoteSession(loading, 'failed');
   const retried = transitionRemoteSession(failed, 'loading');
-  const loaded = transitionRemoteSession(retried, 'loaded');
+  const interactive = transitionRemoteSession(retried, 'interactive');
+  const loaded = transitionRemoteSession(interactive, 'loaded');
 
   assert.equal(loaded.targetUrl, loading.targetUrl);
   assert.equal(loaded.storageWarning, true);
   assert.equal(loaded.state, 'loaded');
+  assert.equal(interactive.state, 'interactive');
   assert.throws(() => transitionRemoteSession(loaded, 'unknown'), /invalid-remote-state/);
 });

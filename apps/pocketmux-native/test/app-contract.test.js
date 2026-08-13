@@ -87,8 +87,8 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   const capability = JSON.parse(capabilityText);
 
   assert.match(html, /连接后会直接打开原有网页界面/);
-  assert.match(html, /styles\.css\?v=20260813-token-persistence-1019/);
-  assert.match(html, /main\.js\?v=20260813-token-persistence-1019/);
+  assert.match(html, /styles\.css\?v=20260813-legacy-server-1020/);
+  assert.match(html, /main\.js\?v=20260813-legacy-server-1020/);
   assert.match(html, /id="remote-menu-toggle"[^>]+aria-expanded="false"[\s\S]*?<span aria-hidden="true">›<\/span>/);
   assert.match(html, /id="remote-drawer"[^>]+aria-hidden="true"[^>]+inert/);
   assert.match(html, /id="refresh-remote"/);
@@ -147,6 +147,8 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /invoke\('exit_app'\)/);
   assert.match(main, /elements\.remoteFrame\.inert = true/);
   assert.match(main, /setRemoteState\('failed', operation\)/);
+  assert.match(main, /remoteSession\?\.state === 'loading'\) setRemoteState\('interactive', operation\)/);
+  assert.doesNotMatch(main, /addEventListener\('load',[\s\S]{0,500}setRemoteState\('loaded'/);
   assert.doesNotMatch(main, /window\.location\.(?:assign|replace)/);
   assert.match(main, /validateSavedToken/);
   assert.match(main, /invoke\('validate_token'/);
@@ -251,7 +253,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.windows[0].generalAutofillEnabled, false);
   assert.equal(config.identifier, 'io.github.yuxinkang.pocketmux');
-  assert.equal(config.bundle.android.versionCode, 1019);
+  assert.equal(config.bundle.android.versionCode, 1020);
   assert.match(config.app.security.csp, /frame-src http: https:/);
   assert.deepEqual(capability.permissions, ['core:default']);
   assert.equal('remote' in capability, false);
