@@ -70,23 +70,28 @@ class MainActivityImeTest {
         webView,
         """
           (() => {
-            const frame = document.createElement('iframe');
-            frame.id = 'ime-frame';
-            frame.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;border:0';
+            const appFrame = document.querySelector('.app-frame');
+            const frame = document.querySelector('#remote-frame');
+            document.querySelector('#launcher').classList.add('is-hidden');
+            document.querySelector('#app-footer').classList.add('is-hidden');
+            document.querySelector('#remote-shell').classList.remove('is-hidden');
+            appFrame.classList.add('is-remote');
             frame.srcdoc = '<textarea id="composer" style="position:fixed;left:8px;right:8px;bottom:8px;height:56px"></textarea>';
-            document.body.replaceChildren(frame);
             return true;
           })()
         """.trimIndent(),
       )
-      waitForJavaScript(webView, "Boolean(document.querySelector('#ime-frame')?.contentDocument?.querySelector('#composer'))") {
+      waitForJavaScript(webView, "Boolean(document.querySelector('#remote-frame')?.contentDocument?.querySelector('#composer'))") {
         it == "true"
       }
 
-      val initialViewportHeight = evaluateDouble(webView, "window.visualViewport.height")
+      val initialFrameBottom = evaluateDouble(
+        webView,
+        "document.querySelector('#remote-frame').getBoundingClientRect().bottom",
+      )
       evaluateJavaScript(
         webView,
-        "document.querySelector('#ime-frame').contentDocument.querySelector('#composer').focus(); true",
+        "document.querySelector('#remote-frame').contentDocument.querySelector('#composer').focus(); true",
       )
       scenario.onActivity { activity ->
         webView.requestFocus()
@@ -94,28 +99,30 @@ class MainActivityImeTest {
           .showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT)
       }
 
-      val keyboardViewportHeight = waitForDouble(webView, "window.visualViewport.height") {
-        it < initialViewportHeight - 100
-      }
-      val visibleBottom = evaluateDouble(
+      val frameBottom = waitForDouble(
         webView,
-        "window.visualViewport.offsetTop + window.visualViewport.height",
-      )
+        "document.querySelector('#remote-frame').getBoundingClientRect().bottom",
+      ) { it <= initialFrameBottom - 100 }
+      val nativeViewportHeight = waitForDouble(
+        webView,
+        "Number(window.__POCKETMUX_NATIVE_VIEWPORT__?.height || 0)",
+      ) { it > 0 }
       val composerBottom = evaluateDouble(
         webView,
         """
           (() => {
-            const frame = document.querySelector('#ime-frame');
+            const frame = document.querySelector('#remote-frame');
             const composer = frame.contentDocument.querySelector('#composer');
             return frame.getBoundingClientRect().top + composer.getBoundingClientRect().bottom;
           })()
         """.trimIndent(),
       )
-      assertTrue("composer is hidden behind the IME", composerBottom <= visibleBottom + 2)
+      assertTrue("remote frame is hidden behind the IME", frameBottom <= nativeViewportHeight + 3)
+      assertTrue("composer is hidden behind the IME", composerBottom <= frameBottom + 2)
 
       pressBack()
-      waitForDouble(webView, "window.visualViewport.height") {
-        it > keyboardViewportHeight + 100
+      waitForDouble(webView, "document.querySelector('#remote-frame').getBoundingClientRect().bottom") {
+        it >= initialFrameBottom - 2
       }
     }
   }

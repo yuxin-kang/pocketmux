@@ -49,6 +49,27 @@ test('does not create an orphan credential when metadata storage fails', async (
   });
 });
 
+test('does not start credential persistence after validation is superseded', async () => {
+  let current = true;
+  let credentialWrites = 0;
+  const result = await persistValidatedCredential({
+    initialization: Promise.resolve(),
+    isCurrent: () => current,
+    persistMetadata: () => {
+      current = false;
+      return true;
+    },
+    persistCredential: async () => { credentialWrites += 1; return true; },
+  });
+
+  assert.equal(credentialWrites, 0);
+  assert.deepEqual(result, {
+    cancelled: true,
+    metadataPersisted: true,
+    credentialPersisted: false,
+  });
+});
+
 test('does not persist a credential for a connection superseded during initialization', async () => {
   const initialization = deferred();
   let current = true;

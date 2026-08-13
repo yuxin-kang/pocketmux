@@ -4,6 +4,7 @@
   const bootstrapParams = new URLSearchParams(window.location.search);
   const queryToken = bootstrapParams.get('token');
   const nativeBootstrap = bootstrapParams.get('native') === '1';
+  if (nativeBootstrap) document.documentElement.dataset.nativeBootstrap = 'true';
   const {
     LANGUAGE_STORAGE_KEY,
     htmlLanguage,
@@ -49,6 +50,7 @@
   const MESSAGE_INPUT_MAX_HEIGHT = 140;
   const NATIVE_LANGUAGE_MESSAGE_TYPE = 'pocketmux:language';
   const NATIVE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required';
+  const NATIVE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded';
   const MESSAGE_INPUT_VIEWPORT_MARGIN = 12;
   const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
   const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -211,6 +213,13 @@
     }, '*');
   }
 
+  function publishAuthenticationSucceededToNativeShell() {
+    if (!nativeBootstrap || window.parent === window) return;
+    window.parent.postMessage({
+      type: NATIVE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE,
+    }, '*');
+  }
+
   function setLanguage(language) {
     const nextLanguage = normalizeLanguage(language);
     if (nextLanguage === state.language) return;
@@ -280,6 +289,11 @@
   }
 
   function showAuth() {
+    if (nativeBootstrap) {
+      elements.authGate.classList.add('is-hidden');
+      elements.appShell.classList.add('is-hidden');
+      return;
+    }
     elements.authGate.classList.remove('is-hidden');
     elements.appShell.classList.add('is-hidden');
     renderAuthError();
@@ -310,14 +324,21 @@
       && response.headers.get('X-Pocketmux-Protocol-Version') === '1';
   }
 
+  function isPocketmuxHealthPayload(payload) {
+    return payload?.ok === true
+      && payload.product === 'pocketmux'
+      && payload.protocolVersion === 1;
+  }
+
   async function api(path, options = {}) {
-    const headers = new Headers(options.headers || {});
+    const { requirePocketmuxIdentity = false, ...requestOptions } = options;
+    const headers = new Headers(requestOptions.headers || {});
     headers.set('Authorization', `Bearer ${state.token}`);
-    if (options.body && typeof options.body !== 'string') {
+    if (requestOptions.body && typeof requestOptions.body !== 'string') {
       headers.set('Content-Type', 'application/json');
-      options.body = JSON.stringify(options.body);
+      requestOptions.body = JSON.stringify(requestOptions.body);
     }
-    const response = await fetch(resolveAppUrl(path, window.location.href), { ...options, headers });
+    const response = await fetch(resolveAppUrl(path, window.location.href), { ...requestOptions, headers });
     let payload = {};
     try {
       payload = await response.json();
@@ -328,6 +349,9 @@
       const error = responseError(payload, response.status, 'error.invalidToken');
       error.unauthorized = true;
       throw error;
+    }
+    if (requirePocketmuxIdentity && !isPocketmuxApiResponse(response)) {
+      throw responseError({}, 502, 'error.requestFailed');
     }
     if (!response.ok) {
       throw responseError(payload, response.status, 'error.requestFailed');
@@ -1400,14 +1424,19 @@
   async function unlock(token) {
     state.token = token.trim();
     if (!state.token) return;
+    const unlockToken = state.token;
     state.authErrorKey = '';
     state.authErrorMessages = null;
     renderAuthError();
     try {
-      await api('/api/health');
+      const health = await api('/api/health', { requirePocketmuxIdentity: true });
+      if (!isPocketmuxHealthPayload(health)) {
+        throw responseError({}, 502, 'error.requestFailed');
+      }
       if (!nativeBootstrap) localStorage.setItem('tmux-relay-token', state.token);
       showShell();
       await refreshSessions();
+      if (state.token === unlockToken) publishAuthenticationSucceededToNativeShell();
     } catch (error) {
       state.token = '';
       if (error.unauthorized && !nativeBootstrap) localStorage.removeItem('tmux-relay-token');

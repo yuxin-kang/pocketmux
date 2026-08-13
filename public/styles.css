@@ -21,6 +21,10 @@
   --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+html[data-native-bootstrap="true"] #auth-gate {
+  display: none !important;
+}
+
 * { box-sizing: border-box; }
 
 html, body { min-height: 100%; }

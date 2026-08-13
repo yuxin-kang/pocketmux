@@ -5,6 +5,13 @@ import {
 } from './connection.js';
 import { planConnectionSwitch } from './connection-switch.js';
 import { createConnectionOperationTracker } from './connection-operations.js';
+import { createConnectionValidationTracker } from './connection-validation.js';
+import {
+  beginConnectionAuthentication,
+  recordNativeValidation,
+  recordWebAuthentication,
+  shouldIgnoreNativeInvalidation,
+} from './connection-authentication.js';
 import { migrateLegacyCredentials } from './credential-migration.js';
 import { initializeConnections } from './connection-initialization.js';
 import { rejectCredential } from './rejected-credential.js';
@@ -17,6 +24,10 @@ import {
   normalizeHandlePosition,
 } from './floating-handle.js';
 import { messages, normalizeLanguage } from './i18n.js';
+import {
+  normalizeNativeViewportHeight,
+  resolveRemoteViewportHeight,
+} from './remote-viewport.js';
 import { beginRemoteSession, transitionRemoteSession } from './remote-session.js';
 import { persistValidatedCredential } from './validated-credential.js';
 import {
@@ -37,9 +48,10 @@ const REMOTE_HANDLE_POSITION_KEY = 'pocketmux-native-remote-handle-position-v1';
 const REMOTE_HANDLE_HEIGHT_PX = 58;
 const REMOTE_HANDLE_MARGIN_PX = 12;
 const REMOTE_LOAD_TIMEOUT_MS = 15000;
-const REMOTE_REVEAL_DELAY_MS = 1600;
 const REMOTE_LANGUAGE_MESSAGE_TYPE = 'pocketmux:language';
 const REMOTE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required';
+const REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded';
+const NATIVE_VIEWPORT_EVENT_TYPE = 'pocketmux:native-viewport';
 const connectionPolicy = {
   allowPrivateHttp: !/\bAndroid\b/i.test(window.navigator.userAgent),
 };
@@ -111,9 +123,14 @@ let switchingTarget = '';
 let renamingServerUrl = '';
 let currentErrorKey = '';
 let initializationSettled = false;
+let nativeViewportHeight = normalizeNativeViewportHeight(
+  window.__POCKETMUX_NATIVE_VIEWPORT__?.height,
+);
 const connectionOperations = createConnectionOperationTracker();
+const connectionValidations = createConnectionValidationTracker();
 const connectionTokens = new Map();
 const authenticatedTargets = new Map();
+const connectionAttempts = new Map();
 let credentialMutationQueue = Promise.resolve();
 let initializationPromise = Promise.resolve();
 let shellSessionToken = '';
@@ -166,6 +183,17 @@ function rebuildAuthenticatedTargets() {
       // Keep malformed or platform-incompatible legacy profiles out of direct switching.
     }
   }
+  for (const attempt of connectionAttempts.values()) {
+    if (!attempt.authenticated || !connectionValidations.isCurrent(attempt.validationAttempt)) continue;
+    try {
+      const connection = requireAccessToken(
+        buildRemoteConnection(attempt.connection.serverUrl, attempt.connection.token),
+      );
+      authenticatedTargets.set(connection.serverUrl, connection.targetUrl);
+    } catch {
+      // Keep malformed or platform-incompatible active attempts out of direct switching.
+    }
+  }
 }
 
 function persistConnectionProfiles() {
@@ -189,6 +217,12 @@ function rememberConnectionMetadata(connection) {
   connectionProfiles = remembered.connectionProfiles;
   recentServers = connectionProfiles.map((profile) => profile.serverUrl);
   return persistConnectionProfiles();
+}
+
+function persistValidatedConnectionMetadata(connection) {
+  return profileForServer(connection.serverUrl)
+    ? persistConnectionProfiles()
+    : rememberConnectionMetadata(connection);
 }
 
 function nativeInvoke() {
@@ -220,8 +254,9 @@ function queueCredentialMutation(mutation) {
   return result;
 }
 
-async function storeConnectionToken(connection) {
+async function storeConnectionToken(connection, { isCurrent = () => true } = {}) {
   return queueCredentialMutation(async () => {
+    if (!isCurrent()) return false;
     const invoke = nativeInvoke();
     if (!invoke) return false;
     try {
@@ -229,6 +264,17 @@ async function storeConnectionToken(connection) {
         serverUrl: connection.serverUrl,
         token: connection.token,
       });
+      if (!isCurrent()) {
+        try {
+          await invoke('reject_connection_token', {
+            serverUrl: connection.serverUrl,
+            expectedToken: connection.token,
+          });
+        } catch {
+          // Keep the newer in-memory attempt authoritative if cleanup is unavailable.
+        }
+        return false;
+      }
       connectionTokens.set(connection.serverUrl, connection.token);
       const previousLegacyConnectionTokens = legacyConnectionTokens;
       legacyConnectionTokens = legacyConnectionTokens.filter(
@@ -245,6 +291,51 @@ async function storeConnectionToken(connection) {
       return false;
     }
   });
+}
+
+function persistConnectionAttempt(attempt) {
+  if (!attempt) {
+    return Promise.resolve({ cancelled: true, metadataPersisted: false, credentialPersisted: false });
+  }
+  if (connectionTokens.get(attempt.connection.serverUrl) === attempt.connection.token) {
+    return Promise.resolve({ cancelled: false, metadataPersisted: true, credentialPersisted: true });
+  }
+  if (!connectionValidations.isCurrent(attempt.validationAttempt)) {
+    return Promise.resolve({ cancelled: true, metadataPersisted: false, credentialPersisted: false });
+  }
+  if (attempt.persistencePromise) return attempt.persistencePromise;
+
+  attempt.persistenceState = 'pending';
+  attempt.persistencePromise = persistValidatedCredential({
+    initialization: initializationPromise,
+    isCurrent: () => connectionValidations.isCurrent(attempt.validationAttempt),
+    persistMetadata: () => persistValidatedConnectionMetadata(attempt.connection),
+    persistCredential: () => storeConnectionToken(attempt.connection, {
+      isCurrent: () => connectionValidations.isCurrent(attempt.validationAttempt),
+    }),
+  }).then((persistence) => {
+    attempt.persistenceResult = persistence;
+    attempt.persistenceState = persistence.credentialPersisted
+      ? 'saved'
+      : (persistence.cancelled ? 'cancelled' : 'failed');
+    renderRecentServers();
+    return persistence;
+  });
+  return attempt.persistencePromise;
+}
+
+function markConnectionAttemptAuthenticated(attempt) {
+  if (!attempt || !connectionValidations.isCurrent(attempt.validationAttempt)) return false;
+  attempt.authenticated = true;
+  rebuildAuthenticatedTargets();
+  if (
+    !connectionOperations.isCurrent(attempt.operation)
+    || !remoteSession
+    || remoteSession.serverUrl !== attempt.connection.serverUrl
+  ) return true;
+  setRemoteState('loaded', attempt.operation);
+  renderRecentServers();
+  return true;
 }
 
 async function storeLegacyConnectionToken(connection) {
@@ -433,19 +524,59 @@ function setLanguage(nextLanguage) {
   }
 }
 
+function connectionAttemptForMessage(event) {
+  for (const attempt of connectionAttempts.values()) {
+    if (attempt.frameWindow !== event.source) continue;
+    if (event.origin !== new URL(attempt.connection.serverUrl).origin) continue;
+    return attempt;
+  }
+  return null;
+}
+
 function receiveRemoteLanguage(event) {
-  if (!remoteSession || event.source !== elements.remoteFrame.contentWindow) return;
-  if (event.origin !== new URL(remoteSession.serverUrl).origin) return;
+  const attempt = connectionAttemptForMessage(event);
+  if (event.data?.type === REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE) {
+    if (!attempt || !connectionValidations.isCurrent(attempt.validationAttempt)) return;
+    if (attempt.authenticated) return;
+    attempt.authentication = recordWebAuthentication(attempt.authentication);
+    attempt.authenticated = true;
+    markConnectionAttemptAuthenticated(attempt);
+    void persistConnectionAttempt(attempt)
+      .then((persistence) => {
+        if (!connectionOperations.isCurrent(attempt.operation)) return;
+        if (persistence.cancelled) return;
+        remoteSession = Object.freeze({
+          ...remoteSession,
+          storageWarning: !persistence.metadataPersisted || !persistence.credentialPersisted,
+        });
+        renderRecentServers();
+        renderRemoteState();
+      })
+      .catch((error) => {
+        console.warn('Pocketmux credential persistence failed after web authentication', error);
+        if (!connectionOperations.isCurrent(attempt.operation)) return;
+        remoteSession = Object.freeze({ ...remoteSession, storageWarning: true });
+        renderRecentServers();
+        renderRemoteState();
+      });
+    return;
+  }
+
   if (event.data?.type === REMOTE_LANGUAGE_MESSAGE_TYPE) {
+    if (!remoteSession || event.source !== elements.remoteFrame.contentWindow) return;
+    if (event.origin !== new URL(remoteSession.serverUrl).origin) return;
     if (event.data.language !== 'zh' && event.data.language !== 'en') return;
     setLanguage(event.data.language);
     return;
   }
   if (event.data?.type !== REMOTE_AUTH_REQUIRED_MESSAGE_TYPE) return;
-  const rejectedConnection = buildRemoteConnection(remoteSession.targetUrl);
+  if (!attempt) return;
+  const rejectedConnection = attempt.connection;
+  connectionValidations.begin(rejectedConnection.serverUrl);
+  connectionAttempts.delete(rejectedConnection.serverUrl);
   const operation = connectionOperations.current();
   void forgetRejectedToken(rejectedConnection).then((persisted) => {
-    if (!connectionOperations.isCurrent(operation)) return;
+    if (!connectionOperations.isCurrent(operation) || remoteSession?.serverUrl !== rejectedConnection.serverUrl) return;
     window.history.replaceState(
       { screen: 'launcher' },
       '',
@@ -521,6 +652,29 @@ function closeRemoteDrawer({ restoreFocus = true } = {}) {
 
 function remoteShellHeight() {
   return elements.remoteShell.clientHeight || elements.remoteShell.getBoundingClientRect().height;
+}
+
+function applyRemoteViewportHeight() {
+  if (!elements.appFrame.classList.contains('is-remote')) {
+    elements.appFrame.style.removeProperty('--remote-viewport-height');
+    return;
+  }
+
+  const viewport = window.visualViewport;
+  const height = resolveRemoteViewportHeight({
+    layoutHeight: window.innerHeight,
+    visualViewportHeight: viewport?.height,
+    visualViewportOffsetTop: viewport?.offsetTop,
+    visualViewportScale: viewport?.scale,
+    nativeViewportHeight,
+  });
+  elements.appFrame.style.setProperty('--remote-viewport-height', `${Math.floor(height)}px`);
+  applyRemoteHandlePosition();
+}
+
+function updateNativeViewport(event) {
+  nativeViewportHeight = normalizeNativeViewportHeight(event.detail?.height);
+  applyRemoteViewportHeight();
 }
 
 function placeRemoteHandle(centerY) {
@@ -622,11 +776,14 @@ function keepFocusInRemoteDrawer(event) {
 
 function openConnectionNameDialog(serverUrl) {
   const profile = profileForServer(serverUrl);
-  if (!profile) return;
   renamingServerUrl = serverUrl;
   elements.connectionNameServer.textContent = new URL(serverUrl).host;
-  elements.connectionName.value = profile.name || '';
-  elements.connectionNameDialog.showModal();
+  elements.connectionName.value = profile?.name || '';
+  try {
+    elements.connectionNameDialog.showModal();
+  } catch {
+    elements.connectionNameDialog.setAttribute('open', '');
+  }
   requestAnimationFrame(() => {
     elements.connectionName.focus();
     elements.connectionName.select();
@@ -635,7 +792,14 @@ function openConnectionNameDialog(serverUrl) {
 
 function closeConnectionNameDialog({ restoreFocus = true } = {}) {
   renamingServerUrl = '';
-  elements.connectionNameDialog.close();
+  if (
+    elements.connectionNameDialog.open
+    && typeof elements.connectionNameDialog.close === 'function'
+  ) {
+    elements.connectionNameDialog.close();
+  } else {
+    elements.connectionNameDialog.removeAttribute('open');
+  }
   if (restoreFocus && elements.remoteDrawer.classList.contains('is-open')) {
     requestAnimationFrame(() => elements.closeRemoteDrawer.focus());
   }
@@ -735,7 +899,7 @@ function showRemote(serverUrl, targetUrl, { pushHistory = true, storageWarning =
   elements.footer.classList.add('is-hidden');
   elements.remoteShell.classList.remove('is-hidden');
   elements.appFrame.classList.add('is-remote');
-  requestAnimationFrame(applyRemoteHandlePosition);
+  requestAnimationFrame(applyRemoteViewportHeight);
   renderSwitchTargets();
   closeRemoteDrawer({ restoreFocus: false });
   setRemoteState('loading', operation);
@@ -747,10 +911,6 @@ function showRemote(serverUrl, targetUrl, { pushHistory = true, storageWarning =
       || elements.remoteShell.classList.contains('is-hidden')
     ) return;
     clearRemoteRevealTimer();
-    remoteRevealTimer = window.setTimeout(
-      () => setRemoteState('loaded', operation),
-      REMOTE_REVEAL_DELAY_MS,
-    );
   }, { once: true });
   nextFrame.addEventListener('error', () => setRemoteState('failed', operation), { once: true });
   elements.remoteFrame.replaceWith(nextFrame);
@@ -770,6 +930,7 @@ function showConnections({ serverUrl, message = '', focusToken = false } = {}) {
   elements.launcher.classList.remove('is-hidden');
   elements.footer.classList.remove('is-hidden');
   elements.appFrame.classList.remove('is-remote');
+  applyRemoteViewportHeight();
   elements.connectButton.disabled = false;
   elements.connectButton.classList.remove('is-loading');
   if (serverUrl !== undefined) elements.serverUrl.value = serverUrl;
@@ -779,26 +940,35 @@ function showConnections({ serverUrl, message = '', focusToken = false } = {}) {
   requestAnimationFrame(() => (focusToken ? elements.accessToken : elements.serverUrl).focus());
 }
 
-async function monitorConnectionValidation(connection, operation, { persistOnValid = false } = {}) {
+async function monitorConnectionValidation(
+  connection,
+  operation,
+  { persistOnValid = false, attempt } = {},
+) {
   const validation = await validateSavedToken(connection);
-  if (!connectionOperations.isCurrent(operation)) return validation;
-  if (validation === 'valid' && persistOnValid) {
-    const persistence = await persistValidatedCredential({
-      initialization: initializationPromise,
-      isCurrent: () => connectionOperations.isCurrent(operation),
-      persistMetadata: () => rememberConnectionMetadata(connection),
-      persistCredential: () => storeConnectionToken(connection),
-    });
+  if (attempt) attempt.authentication = recordNativeValidation(attempt.authentication, validation);
+  if (validation === 'valid') {
+    const persistence = persistOnValid
+      ? await persistConnectionAttempt(attempt)
+      : { cancelled: false, metadataPersisted: true, credentialPersisted: true };
     if (persistence.cancelled) return validation;
-    remoteSession = Object.freeze({
-      ...remoteSession,
-      storageWarning: !persistence.metadataPersisted || !persistence.credentialPersisted,
-    });
+    if (!markConnectionAttemptAuthenticated(attempt)) return validation;
+    if (!connectionOperations.isCurrent(operation)) return validation;
+    if (persistOnValid) {
+      remoteSession = Object.freeze({
+        ...remoteSession,
+        storageWarning: !persistence.metadataPersisted || !persistence.credentialPersisted,
+      });
+    }
     renderRecentServers();
     renderRemoteState();
     return validation;
   }
+  if (!connectionOperations.isCurrent(operation)) return validation;
   if (validation !== 'invalid') return validation;
+  if (attempt && shouldIgnoreNativeInvalidation(attempt.authentication)) return validation;
+  connectionValidations.begin(connection.serverUrl);
+  connectionAttempts.delete(connection.serverUrl);
   const persisted = await forgetRejectedToken(connection);
   if (!connectionOperations.isCurrent(operation)) return validation;
   renderRecentServers();
@@ -827,11 +997,32 @@ async function navigateToServer(serverInput, tokenInput = '', { pushHistory = tr
   elements.connectButton.classList.add('is-loading');
   elements.serverUrl.value = connection.serverUrl;
   elements.accessToken.value = '';
+  const validationAttempt = connectionValidations.begin(connection.serverUrl);
+  const metadataPersisted = rememberConnectionMetadata(connection);
+  renderRecentServers();
   const operation = showRemote(connection.serverUrl, connection.targetUrl, {
     pushHistory,
+    storageWarning: !metadataPersisted,
   });
+  const attempt = {
+    connection,
+    validationAttempt,
+    operation,
+    frameWindow: elements.remoteFrame.contentWindow,
+    authentication: beginConnectionAuthentication(),
+    authenticated: false,
+    persistenceState: 'idle',
+    persistencePromise: null,
+    persistenceResult: null,
+  };
+  connectionAttempts.set(connection.serverUrl, attempt);
+  rebuildAuthenticatedTargets();
   void monitorConnectionValidation(connection, operation, {
     persistOnValid: connectionTokens.get(connection.serverUrl) !== connection.token,
+    validationAttempt,
+    attempt,
+  }).catch((error) => {
+    console.warn('Pocketmux native connection validation failed', error);
   });
   return true;
 }
@@ -912,29 +1103,12 @@ async function exitNativeApp() {
 async function reloadRemoteConnection() {
   if (!remoteSession?.targetUrl) return;
   const connection = buildRemoteConnection(remoteSession.targetUrl);
-  const operation = connectionOperations.current();
-  setRemoteState('loading', operation);
   elements.remoteNotice.textContent = text('remote.validatingToken');
-  const validation = await validateSavedToken(connection);
-  if (!connectionOperations.isCurrent(operation)) return;
-  if (validation === 'invalid') {
-    const persisted = await forgetRejectedToken(connection);
-    if (!connectionOperations.isCurrent(operation)) return;
-    window.history.replaceState(
-      { screen: 'launcher' },
-      '',
-      `${window.location.pathname}${window.location.search}`,
-    );
-    showConnections({
-      serverUrl: connection.serverUrl,
-      message: text('error.invalidToken'),
-      focusToken: true,
-    });
-    if (!persisted) setError(text('error.storageUnavailable'));
-    renderRecentServers();
-    return;
+  try {
+    await navigateToServer(connection.serverUrl, connection.token, { pushHistory: false });
+  } catch (error) {
+    setError(localizedError(error));
   }
-  showRemote(connection.serverUrl, connection.targetUrl, { pushHistory: false });
 }
 
 function recentServerRow(serverUrl) {
@@ -982,6 +1156,8 @@ function recentServerRow(serverUrl) {
   removeButton.title = text('recent.remove');
   removeButton.addEventListener('click', async () => {
     connectionOperations.begin();
+    connectionValidations.begin(serverUrl);
+    connectionAttempts.delete(serverUrl);
     const credentialDeleted = await deleteConnectionToken(serverUrl);
     if (!credentialDeleted) {
       setError(text('error.storageUnavailable'));
@@ -1056,9 +1232,18 @@ window.addEventListener('message', receiveRemoteLanguage);
 
 elements.connectionNameForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  if (!renamingServerUrl || !profileForServer(renamingServerUrl)) {
+  if (!renamingServerUrl) {
     closeConnectionNameDialog();
     return;
+  }
+  if (!profileForServer(renamingServerUrl)) {
+    const remembered = rememberConnectionProfile(
+      null,
+      CONNECTION_PROFILES_KEY,
+      connectionProfiles,
+      { serverUrl: renamingServerUrl },
+    );
+    connectionProfiles = remembered.connectionProfiles;
   }
   connectionProfiles = renameConnectionProfile(
     connectionProfiles,
@@ -1148,17 +1333,16 @@ document.addEventListener('keydown', (event) => {
 
 window.addEventListener('popstate', () => {
   if (window.history.state?.screen === 'remote' && remoteSession) {
-    showRemote(remoteSession.serverUrl, remoteSession.targetUrl, {
-      pushHistory: false,
-      storageWarning: remoteSession.storageWarning,
-    });
+    const connection = buildRemoteConnection(remoteSession.targetUrl);
+    void navigateToServer(connection.serverUrl, connection.token, { pushHistory: false });
   } else {
     showConnections();
   }
 });
 
-window.addEventListener('resize', applyRemoteHandlePosition);
-window.visualViewport?.addEventListener('resize', applyRemoteHandlePosition);
+window.addEventListener('resize', applyRemoteViewportHeight);
+window.visualViewport?.addEventListener('resize', applyRemoteViewportHeight);
+window.addEventListener(NATIVE_VIEWPORT_EVENT_TYPE, updateNativeViewport);
 
 window.history.replaceState({ screen: 'launcher' }, '', `${window.location.pathname}${window.location.search}`);
 applyLanguage();

@@ -1,4 +1,7 @@
-use std::{sync::Mutex, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -19,7 +22,7 @@ struct HealthResponse {
     protocol_version: u32,
 }
 
-struct CredentialMutationLock(Mutex<()>);
+struct CredentialMutationLock(Arc<Mutex<()>>);
 struct ShellSession(Mutex<Option<String>>);
 
 fn authorize_shell_context(
@@ -184,7 +187,7 @@ async fn validate_token(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn get_connection_tokens(
+async fn get_connection_tokens(
     app: tauri::AppHandle,
     webview: tauri::WebviewWindow,
     shell_session: tauri::State<'_, ShellSession>,
@@ -192,19 +195,23 @@ fn get_connection_tokens(
     server_urls: Vec<String>,
 ) -> Result<Vec<Result<Option<String>, String>>, String> {
     authorize_shell(&webview, &shell_session, &session_token)?;
-    Ok(server_urls
-        .into_iter()
-        .map(|server_url| {
-            app.keyring()
-                .store
-                .get_password(&token_account(&server_url))
-                .map_err(|error| error.to_string())
-        })
-        .collect())
+    let store = app.keyring().store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        server_urls
+            .into_iter()
+            .map(|server_url| {
+                store
+                    .get_password(&token_account(&server_url))
+                    .map_err(|error| error.to_string())
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn set_connection_token(
+async fn set_connection_token(
     app: tauri::AppHandle,
     webview: tauri::WebviewWindow,
     shell_session: tauri::State<'_, ShellSession>,
@@ -217,16 +224,22 @@ fn set_connection_token(
     if token.trim().is_empty() {
         return Err("token must not be empty".into());
     }
-    with_credential_lock(&lock.0, || {
-        app.keyring()
-            .store
-            .set_password(&token_account(&server_url), &token)
-            .map_err(|error| error.to_string())
+    let account = token_account(&server_url);
+    let store = app.keyring().store.clone();
+    let mutation_lock = Arc::clone(&lock.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        with_credential_lock(&mutation_lock, || {
+            store
+                .set_password(&account, &token)
+                .map_err(|error| error.to_string())
+        })
     })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn delete_connection_token(
+async fn delete_connection_token(
     app: tauri::AppHandle,
     webview: tauri::WebviewWindow,
     shell_session: tauri::State<'_, ShellSession>,
@@ -236,16 +249,19 @@ fn delete_connection_token(
 ) -> Result<(), String> {
     authorize_shell(&webview, &shell_session, &session_token)?;
     let account = token_account(&server_url);
-    with_credential_lock(&lock.0, || {
-        app.keyring()
-            .store
-            .delete(&account)
-            .map_err(|error| error.to_string())
+    let store = app.keyring().store.clone();
+    let mutation_lock = Arc::clone(&lock.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        with_credential_lock(&mutation_lock, || {
+            store.delete(&account).map_err(|error| error.to_string())
+        })
     })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn reject_connection_token(
+async fn reject_connection_token(
     app: tauri::AppHandle,
     webview: tauri::WebviewWindow,
     shell_session: tauri::State<'_, ShellSession>,
@@ -256,21 +272,22 @@ fn reject_connection_token(
 ) -> Result<Option<String>, String> {
     authorize_shell(&webview, &shell_session, &session_token)?;
     let account = token_account(&server_url);
-    with_credential_lock(&lock.0, || {
-        let stored_token = app
-            .keyring()
-            .store
-            .get_password(&account)
-            .map_err(|error| error.to_string())?;
-        if stored_token.as_deref() == Some(expected_token.as_str()) {
-            app.keyring()
-                .store
-                .delete(&account)
+    let store = app.keyring().store.clone();
+    let mutation_lock = Arc::clone(&lock.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        with_credential_lock(&mutation_lock, || {
+            let stored_token = store
+                .get_password(&account)
                 .map_err(|error| error.to_string())?;
-            return Ok(None);
-        }
-        Ok(stored_token)
+            if stored_token.as_deref() == Some(expected_token.as_str()) {
+                store.delete(&account).map_err(|error| error.to_string())?;
+                return Ok(None);
+            }
+            Ok(stored_token)
+        })
     })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[cfg(test)]
@@ -425,7 +442,7 @@ pub fn run() {
         }
     }));
     builder
-        .manage(CredentialMutationLock(Mutex::new(())))
+        .manage(CredentialMutationLock(Arc::new(Mutex::new(()))))
         .manage(ShellSession(Mutex::new(None)))
         .plugin(tauri_plugin_keyring_store::init())
         .invoke_handler(tauri::generate_handler![

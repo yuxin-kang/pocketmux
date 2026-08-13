@@ -73,11 +73,12 @@ function readRgbaPngAlphaBounds(buffer) {
 }
 
 test('keeps a local native shell around the unmodified remote Pocketmux interface', async () => {
-  const [html, main, validatedCredential, browserApp, rust, configText, capabilityText] = await Promise.all([
+  const [html, main, validatedCredential, browserApp, browserHtml, rust, configText, capabilityText] = await Promise.all([
     readFile(path.join(root, 'src', 'index.html'), 'utf8'),
     readFile(path.join(root, 'src', 'main.js'), 'utf8'),
     readFile(path.join(root, 'src', 'validated-credential.js'), 'utf8'),
     readFile(path.join(root, '..', '..', 'public', 'app.js'), 'utf8'),
+    readFile(path.join(root, '..', '..', 'public', 'index.html'), 'utf8'),
     readFile(path.join(root, 'src-tauri', 'src', 'lib.rs'), 'utf8'),
     readFile(path.join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'),
     readFile(path.join(root, 'src-tauri', 'capabilities', 'default.json'), 'utf8'),
@@ -86,8 +87,8 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   const capability = JSON.parse(capabilityText);
 
   assert.match(html, /连接后会直接打开原有网页界面/);
-  assert.match(html, /styles\.css\?v=20260812-language-sync/);
-  assert.match(html, /main\.js\?v=20260812-language-sync/);
+  assert.match(html, /styles\.css\?v=20260813-native-auth-bridge/);
+  assert.match(html, /main\.js\?v=20260813-native-auth-bridge/);
   assert.match(html, /id="remote-menu-toggle"[^>]+aria-expanded="false"[\s\S]*?<span aria-hidden="true">›<\/span>/);
   assert.match(html, /id="remote-drawer"[^>]+aria-hidden="true"[^>]+inert/);
   assert.match(html, /id="refresh-remote"/);
@@ -112,13 +113,16 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /elements\.serverUrl\.value = connection\.serverUrl/);
   assert.match(main, /new URL\(connection\.serverUrl\)\.origin === window\.location\.origin/);
   assert.match(main, /REMOTE_LOAD_TIMEOUT_MS = 15000/);
-  assert.match(main, /REMOTE_REVEAL_DELAY_MS = 1600/);
   assert.match(main, /requireAccessToken\(connection\)/);
   assert.match(main, /openRemoteDrawer/);
   assert.match(main, /closeRemoteDrawer/);
   assert.match(main, /keepFocusInRemoteDrawer/);
   assert.match(main, /shouldBeginDrawerSwipe/);
   assert.match(main, /REMOTE_HANDLE_POSITION_KEY/);
+  assert.match(main, /resolveRemoteViewportHeight\(\{/);
+  assert.match(main, /window\.__POCKETMUX_NATIVE_VIEWPORT__\?\.height/);
+  assert.match(main, /window\.addEventListener\(NATIVE_VIEWPORT_EVENT_TYPE, updateNativeViewport\)/);
+  assert.match(main, /style\.setProperty\('--remote-viewport-height', `\$\{Math\.floor\(height\)\}px`\)/);
   assert.match(main, /remoteMenuToggle\.addEventListener\('pointerdown', beginRemoteHandleDrag\)/);
   assert.match(main, /remoteMenuToggle\.addEventListener\('pointermove', moveRemoteHandle\)/);
   assert.match(main, /writeStoredValue\(storage, REMOTE_HANDLE_POSITION_KEY/);
@@ -150,9 +154,9 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
     main,
     /const operation = showRemote\(connection\.serverUrl, connection\.targetUrl,[\s\S]*?void monitorConnectionValidation\(connection, operation/,
   );
-  assert.match(main, /async function monitorConnectionValidation\(connection, operation,[\s\S]*?if \(!connectionOperations\.isCurrent\(operation\)\) return validation;/);
+  assert.match(main, /async function monitorConnectionValidation\([\s\S]*?if \(!connectionOperations\.isCurrent\(operation\)\) return validation;/);
   assert.doesNotMatch(main, /const validationPromise = validateSavedToken\(connection\)/);
-  assert.match(main, /validation === 'valid' && persistOnValid[\s\S]*?persistValidatedCredential\(\{[\s\S]*?persistMetadata: \(\) => rememberConnectionMetadata\(connection\)[\s\S]*?persistCredential: \(\) => storeConnectionToken\(connection\)/);
+  assert.match(main, /validation === 'valid'[\s\S]*?persistConnectionAttempt\(attempt\)/);
   assert.match(main, /migrateLegacyCredentials\(legacyConnectionTokens/);
   assert.match(main, /const durableLegacyRecord = \[\.\.\.legacyConnectionTokens\]/);
   assert.match(main, /legacyConnectionTokens = migration\.complete[\s\S]*?durableLegacyRecord\.filter/);
@@ -191,6 +195,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /event\.data\?\.type === REMOTE_LANGUAGE_MESSAGE_TYPE/);
   assert.match(main, /setLanguage\(event\.data\.language\)/);
   assert.match(main, /REMOTE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required'/);
+  assert.match(main, /REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded'/);
   assert.match(main, /initializeConnections\(\{/);
   assert.match(main, /isCurrent: \(operation\) => connectionOperations\.isCurrent\(operation\)/);
   assert.match(main, /applyCompletedState: async \(\{ hydration, migrated \}\)/);
@@ -199,6 +204,13 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.doesNotMatch(main, /legacyMigrationPending/);
   assert.match(main, /elements\.accessToken\.addEventListener\('input'/);
   assert.match(browserApp, /NATIVE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required'/);
+  assert.match(browserApp, /NATIVE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded'/);
+  assert.match(browserApp, /publishAuthenticationSucceededToNativeShell\(\)/);
+  assert.match(browserApp, /requirePocketmuxIdentity: true/);
+  assert.match(browserApp, /isPocketmuxHealthPayload\(health\)/);
+  assert.match(browserApp, /if \(nativeBootstrap\) document\.documentElement\.dataset\.nativeBootstrap/);
+  assert.match(browserHtml, /new URLSearchParams\(window\.location\.search\)\.get\('native'\) === '1'/);
+  assert.match(browserHtml, /document\.documentElement\.dataset\.nativeBootstrap = 'true'/);
   assert.match(browserApp, /if \(error\.unauthorized\) publishAuthenticationRequiredToNativeShell\(\)/);
   assert.match(browserApp, /response\.status === 401 && isPocketmuxApiResponse\(response\)/);
   assert.match(rust, /fn exit_app\(/);
@@ -228,21 +240,111 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.doesNotMatch(deleteCommand, /expected_token:/);
   assert.match(rust, /tauri_plugin_keyring_store::init\(\)/);
   assert.match(rust, /tauri_plugin_single_instance::init/);
-  assert.match(rust, /CredentialMutationLock\(Mutex<\(\)>\)/);
+  assert.match(rust, /CredentialMutationLock\(Arc<Mutex<\(\)>>\)/);
   assert.match(rust, /fn with_credential_lock/);
   assert.match(rust, /fn set_connection_token\([\s\S]*?lock: tauri::State<'_, CredentialMutationLock>/);
   assert.match(rust, /fn delete_connection_token\([\s\S]*?lock: tauri::State<'_, CredentialMutationLock>/);
   assert.match(rust, /fn reject_connection_token\([\s\S]*?lock: tauri::State<'_, CredentialMutationLock>/);
   assert.match(rust, /get_webview_window\("main"\)[\s\S]*?window\.unminimize\(\)[\s\S]*?window\.show\(\)[\s\S]*?window\.set_focus\(\)/);
-  assert.match(rust, /\.manage\(CredentialMutationLock\(Mutex::new\(\(\)\)\)\)/);
+  assert.match(rust, /\.manage\(CredentialMutationLock\(Arc::new\(Mutex::new\(\(\)\)\)\)\)/);
   assert.match(rust, /generate_handler!\[[\s\S]*?register_shell_session,[\s\S]*?exit_app,[\s\S]*?validate_token,[\s\S]*?get_connection_tokens,[\s\S]*?set_connection_token,[\s\S]*?delete_connection_token,[\s\S]*?reject_connection_token/);
   assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.windows[0].generalAutofillEnabled, false);
   assert.equal(config.identifier, 'io.github.yuxinkang.pocketmux');
-  assert.equal(config.bundle.android.versionCode, 1001);
+  assert.equal(config.bundle.android.versionCode, 1017);
   assert.match(config.app.security.csp, /frame-src http: https:/);
   assert.deepEqual(capability.permissions, ['core:default']);
   assert.equal('remote' in capability, false);
+});
+
+test('records a connection before asynchronous validation can be superseded', async () => {
+  const main = await readFile(path.join(root, 'src', 'main.js'), 'utf8');
+  const navigateSource = main.slice(
+    main.indexOf('async function navigateToServer('),
+    main.indexOf('async function restoreMostRecentConnection('),
+  );
+  const rememberIndex = navigateSource.indexOf('rememberConnectionMetadata(connection)');
+  const showRemoteIndex = navigateSource.indexOf('showRemote(connection.serverUrl, connection.targetUrl');
+
+  assert.ok(rememberIndex >= 0, 'navigation must record token-free connection metadata');
+  assert.ok(showRemoteIndex >= 0, 'navigation must open the remote connection');
+  assert.ok(
+    rememberIndex < showRemoteIndex,
+    'connection metadata must be recorded before the remote session can be superseded',
+  );
+  assert.match(navigateSource, /renderRecentServers\(\)/);
+  assert.match(navigateSource, /storageWarning: !metadataPersisted/);
+});
+
+test('allows the active connection to be renamed before profile hydration completes', async () => {
+  const main = await readFile(path.join(root, 'src', 'main.js'), 'utf8');
+  const openDialogSource = main.slice(
+    main.indexOf('function openConnectionNameDialog('),
+    main.indexOf('function closeConnectionNameDialog('),
+  );
+  const submitSource = main.slice(
+    main.indexOf("elements.connectionNameForm.addEventListener('submit'"),
+    main.indexOf("elements.cancelConnectionName.addEventListener('click'"),
+  );
+
+  assert.doesNotMatch(openDialogSource, /if \(!profile\) return/);
+  assert.match(openDialogSource, /profile\?\.name \|\| ''/);
+  assert.match(submitSource, /rememberConnectionProfile\(/);
+  assert.match(submitSource, /renameConnectionProfile\(/);
+});
+
+test('persists a validated token after the user switches to another server', async () => {
+  const [main, validatedCredential] = await Promise.all([
+    readFile(path.join(root, 'src', 'main.js'), 'utf8'),
+    readFile(path.join(root, 'src', 'validated-credential.js'), 'utf8'),
+  ]);
+  const validationSource = main.slice(
+    main.indexOf('async function monitorConnectionValidation('),
+    main.indexOf('async function navigateToServer('),
+  );
+
+  assert.match(main, /createConnectionValidationTracker/);
+  assert.match(main, /beginConnectionAuthentication/);
+  assert.match(main, /recordWebAuthentication/);
+  assert.match(main, /recordNativeValidation/);
+  assert.match(main, /const validationAttempt = connectionValidations\.begin\(connection\.serverUrl\)/);
+  assert.match(validationSource, /persistConnectionAttempt\(attempt\)/);
+  assert.match(main, /REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded'/);
+  assert.match(main, /event\.source !== elements\.remoteFrame\.contentWindow/);
+  assert.match(main, /connectionAttemptForMessage/);
+  assert.match(validationSource, /if \(!connectionOperations\.isCurrent\(operation\)\) return validation;/);
+  assert.match(validatedCredential, /if \(!isCurrent\(\)\) \{[\s\S]*credentialPersisted: false/);
+});
+
+test('does not perform a synchronous keyring readback during token writes', async () => {
+  const rust = await readFile(path.join(root, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const setTokenSource = rust.slice(
+    rust.indexOf('fn set_connection_token('),
+    rust.indexOf('fn delete_connection_token('),
+  );
+
+  assert.match(setTokenSource, /set_password\(&account, &token\)/);
+  assert.doesNotMatch(setTokenSource, /get_password\(/);
+});
+
+test('keeps all keyring operations off the synchronous Tauri IPC thread', async () => {
+  const rust = await readFile(path.join(root, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  assert.match(rust, /async fn get_connection_tokens\(/);
+  assert.match(rust, /async fn set_connection_token\(/);
+  assert.match(rust, /async fn delete_connection_token\(/);
+  assert.match(rust, /async fn reject_connection_token\(/);
+  assert.equal((rust.match(/tauri::async_runtime::spawn_blocking/g) || []).length, 4);
+});
+
+test('only acknowledges native authentication after the remote shell initializes', async () => {
+  const browserApp = await readFile(path.join(root, '..', '..', 'public', 'app.js'), 'utf8');
+  const unlockSource = browserApp.slice(
+    browserApp.indexOf('async function unlock('),
+    browserApp.indexOf("elements.tokenForm.addEventListener('submit'"),
+  );
+  assert.ok(unlockSource.indexOf('showShell();') < unlockSource.indexOf('await refreshSessions();'));
+  assert.ok(unlockSource.indexOf('await refreshSessions();') < unlockSource.indexOf('publishAuthenticationSucceededToNativeShell();'));
+  assert.match(unlockSource, /if \(state\.token === unlockToken\)/);
 });
 
 test('disables native autofill and exposes accessible connection controls', async () => {
@@ -271,6 +373,8 @@ test('disables native autofill and exposes accessible connection controls', asyn
   assert.match(styles, /\.connection-item\.is-unavailable::after \{ background: var\(--danger\); \}/);
   assert.doesNotMatch(styles, /\.connection-item::after \{[^}]*content: '›'/);
   assert.match(styles, /\.app-frame\.is-remote \.topbar \{ display: none; \}/);
+  assert.match(styles, /\.app-frame\.is-remote \{[^}]*height: var\(--remote-viewport-height, 100dvh\);[^}]*min-height: 0;/);
+  assert.match(styles, /\.remote-shell \{[\s\S]*?height: 100%;/);
   assert.match(styles, /\.remote-drawer \{[\s\S]*?transform: translateX\(-105%\);/);
   assert.match(styles, /padding: env\(safe-area-inset-top\) max\(18px, env\(safe-area-inset-right\)\) 0 max\(18px, env\(safe-area-inset-left\)\)/);
   assert.match(styles, /env\(safe-area-inset-bottom\)/);
@@ -301,9 +405,17 @@ test('includes a generated Android project with Pocketmux identity and an HTTPS-
   assert.match(activity, /window\.decorView\.setBackgroundColor\(Color\.rgb\(16, 17, 20\)\)/);
   assert.match(activity, /override fun onWebViewCreate\(webView: WebView\)/);
   assert.match(activity, /WindowInsetsCompat\.Type\.systemBars\(\) or WindowInsetsCompat\.Type\.displayCutout\(\)/);
+  assert.match(activity, /windowInsets\.getInsets\(WindowInsetsCompat\.Type\.ime\(\)\)\.bottom/);
   assert.match(activity, /view\.layoutParams as\? ViewGroup\.MarginLayoutParams/);
   assert.match(activity, /layoutParams\.setMargins\(safeArea\.left, safeArea\.top, safeArea\.right, safeArea\.bottom\)/);
   assert.match(activity, /WindowInsetsCompat\.Builder\(windowInsets\)[\s\S]*?\.setInsets\(handledTypes, Insets\.NONE\)[\s\S]*?\.build\(\)/);
+  assert.match(activity, /window\.__POCKETMUX_NATIVE_VIEWPORT__ = viewport/);
+  assert.match(activity, /CustomEvent\('pocketmux:native-viewport', \{ detail: viewport \}\)/);
+  assert.match(activity, /activityDestroyed = true/);
+  assert.match(activity, /activeWebView !== webView/);
+  assert.match(activity, /!webView\.isAttachedToWindow/);
+  assert.match(activity, /webView\.url == null/);
+  assert.match(activity, /catch \(_:\s*RuntimeException\)/);
   assert.doesNotMatch(activity, /WindowInsetsCompat\.CONSUMED/);
   assert.doesNotMatch(activity, /view\.setPadding\(safeArea/);
   assert.match(activity, /ViewCompat\.requestApplyInsets\(webView\)/);
@@ -313,7 +425,8 @@ test('includes a generated Android project with Pocketmux identity and an HTTPS-
     'utf8',
   );
   assert.match(imeTest, /remoteComposerRemainsInsideTheVisualViewportWhileImeIsVisible/);
-  assert.match(imeTest, /composerBottom <= visibleBottom \+ 2/);
+  assert.match(imeTest, /frameBottom <= nativeViewportHeight \+ 3/);
+  assert.match(imeTest, /composerBottom <= frameBottom \+ 2/);
   assert.match(imeTest, /pressBack\(\)/);
 });
 
