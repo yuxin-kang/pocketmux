@@ -251,7 +251,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.windows[0].generalAutofillEnabled, false);
   assert.equal(config.identifier, 'io.github.yuxinkang.pocketmux');
-  assert.equal(config.bundle.android.versionCode, 1017);
+  assert.equal(config.bundle.android.versionCode, 1018);
   assert.match(config.app.security.csp, /frame-src http: https:/);
   assert.deepEqual(capability.permissions, ['core:default']);
   assert.equal('remote' in capability, false);
@@ -334,6 +334,22 @@ test('keeps all keyring operations off the synchronous Tauri IPC thread', async 
   assert.match(rust, /async fn delete_connection_token\(/);
   assert.match(rust, /async fn reject_connection_token\(/);
   assert.equal((rust.match(/tauri::async_runtime::spawn_blocking/g) || []).length, 4);
+});
+
+test('diagnoses credential persistence without logging access tokens', async () => {
+  const [main, rust] = await Promise.all([
+    readFile(path.join(root, 'src', 'main.js'), 'utf8'),
+    readFile(path.join(root, 'src-tauri', 'src', 'lib.rs'), 'utf8'),
+  ]);
+  assert.match(main, /authDebug\('write-start'/);
+  assert.match(main, /authDebug\('write-failed'/);
+  assert.match(main, /authDebug\('persistence-result'/);
+  assert.match(main, /authDebug\('read-complete'/);
+  assert.doesNotMatch(main, /authDebug\([^)]*token:/);
+  assert.match(rust, /fn server_origin\(/);
+  assert.match(rust, /keyring write failed origin=/);
+  assert.match(rust, /keyring read failed origin=/);
+  assert.doesNotMatch(rust, /log::(?:info|warn|error)!\([^;]*expected_token/);
 });
 
 test('only acknowledges native authentication after the remote shell initializes', async () => {

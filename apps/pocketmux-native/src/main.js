@@ -10,6 +10,7 @@ import {
   beginConnectionAuthentication,
   recordNativeValidation,
   recordWebAuthentication,
+  shouldDeferNativeInvalidation,
   shouldIgnoreNativeInvalidation,
 } from './connection-authentication.js';
 import { migrateLegacyCredentials } from './credential-migration.js';
@@ -135,6 +136,10 @@ let credentialMutationQueue = Promise.resolve();
 let initializationPromise = Promise.resolve();
 let shellSessionToken = '';
 
+function authDebug(event, details = {}) {
+  console.info('[pocketmux-auth]', event, details);
+}
+
 function text(key) {
   return messages[language][key] || messages.zh[key] || key;
 }
@@ -256,15 +261,23 @@ function queueCredentialMutation(mutation) {
 
 async function storeConnectionToken(connection, { isCurrent = () => true } = {}) {
   return queueCredentialMutation(async () => {
-    if (!isCurrent()) return false;
+    if (!isCurrent()) {
+      authDebug('write-skipped-stale', { serverUrl: connection.serverUrl });
+      return false;
+    }
     const invoke = nativeInvoke();
-    if (!invoke) return false;
+    if (!invoke) {
+      authDebug('write-skipped-native-unavailable', { serverUrl: connection.serverUrl });
+      return false;
+    }
+    authDebug('write-start', { serverUrl: connection.serverUrl });
     try {
       await invoke('set_connection_token', {
         serverUrl: connection.serverUrl,
         token: connection.token,
       });
       if (!isCurrent()) {
+        authDebug('write-cleanup-stale', { serverUrl: connection.serverUrl });
         try {
           await invoke('reject_connection_token', {
             serverUrl: connection.serverUrl,
@@ -286,8 +299,13 @@ async function storeConnectionToken(connection, { isCurrent = () => true } = {})
         return false;
       }
       rebuildAuthenticatedTargets();
+      authDebug('write-success', { serverUrl: connection.serverUrl });
       return true;
-    } catch {
+    } catch (error) {
+      authDebug('write-failed', {
+        serverUrl: connection.serverUrl,
+        error: String(error),
+      });
       return false;
     }
   });
@@ -314,6 +332,12 @@ function persistConnectionAttempt(attempt) {
       isCurrent: () => connectionValidations.isCurrent(attempt.validationAttempt),
     }),
   }).then((persistence) => {
+    authDebug('persistence-result', {
+      serverUrl: attempt.connection.serverUrl,
+      metadataPersisted: persistence.metadataPersisted,
+      credentialPersisted: persistence.credentialPersisted,
+      cancelled: persistence.cancelled,
+    });
     attempt.persistenceResult = persistence;
     attempt.persistenceState = persistence.credentialPersisted
       ? 'saved'
@@ -400,8 +424,14 @@ async function deleteConnectionToken(serverUrl) {
 async function hydrateConnectionTokens() {
   return queueCredentialMutation(async () => {
     const invoke = nativeInvoke();
-    if (!invoke) return { complete: false, states: new Map() };
-    if (connectionProfiles.length === 0) return { complete: true, states: new Map() };
+    if (!invoke) {
+      authDebug('read-skipped-native-unavailable');
+      return { complete: false, states: new Map() };
+    }
+    if (connectionProfiles.length === 0) {
+      authDebug('read-complete', { servers: 0, present: 0, missing: 0, unknown: 0 });
+      return { complete: true, states: new Map() };
+    }
     const serverUrls = connectionProfiles.map((profile) => profile.serverUrl);
     try {
       const results = await invoke('get_connection_tokens', { serverUrls });
@@ -423,8 +453,15 @@ async function hydrateConnectionTokens() {
         }
       });
       rebuildAuthenticatedTargets();
+      authDebug('read-complete', {
+        servers: serverUrls.length,
+        present: [...states.values()].filter((state) => state === 'present').length,
+        missing: [...states.values()].filter((state) => state === 'missing').length,
+        unknown: [...states.values()].filter((state) => state === 'unknown').length,
+      });
       return { complete, states };
-    } catch {
+    } catch (error) {
+      authDebug('read-failed', { error: String(error) });
       return {
         complete: false,
         states: new Map(serverUrls.map((serverUrl) => [serverUrl, 'unknown'])),
@@ -540,6 +577,7 @@ function receiveRemoteLanguage(event) {
     if (attempt.authenticated) return;
     attempt.authentication = recordWebAuthentication(attempt.authentication);
     attempt.authenticated = true;
+    authDebug('web-authenticated', { serverUrl: attempt.connection.serverUrl });
     markConnectionAttemptAuthenticated(attempt);
     void persistConnectionAttempt(attempt)
       .then((persistence) => {
@@ -571,6 +609,7 @@ function receiveRemoteLanguage(event) {
   }
   if (event.data?.type !== REMOTE_AUTH_REQUIRED_MESSAGE_TYPE) return;
   if (!attempt) return;
+  authDebug('web-auth-required', { serverUrl: attempt.connection.serverUrl });
   const rejectedConnection = attempt.connection;
   connectionValidations.begin(rejectedConnection.serverUrl);
   connectionAttempts.delete(rejectedConnection.serverUrl);
@@ -946,6 +985,7 @@ async function monitorConnectionValidation(
   { persistOnValid = false, attempt } = {},
 ) {
   const validation = await validateSavedToken(connection);
+  authDebug('native-validation', { serverUrl: connection.serverUrl, validation });
   if (attempt) attempt.authentication = recordNativeValidation(attempt.authentication, validation);
   if (validation === 'valid') {
     const persistence = persistOnValid
@@ -966,6 +1006,10 @@ async function monitorConnectionValidation(
   }
   if (!connectionOperations.isCurrent(operation)) return validation;
   if (validation !== 'invalid') return validation;
+  if (attempt && shouldDeferNativeInvalidation(attempt.authentication)) {
+    authDebug('native-invalid-deferred', { serverUrl: connection.serverUrl });
+    return validation;
+  }
   if (attempt && shouldIgnoreNativeInvalidation(attempt.authentication)) return validation;
   connectionValidations.begin(connection.serverUrl);
   connectionAttempts.delete(connection.serverUrl);

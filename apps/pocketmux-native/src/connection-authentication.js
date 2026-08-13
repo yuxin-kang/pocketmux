@@ -22,3 +22,7 @@ export function shouldPersistAuthenticatedCredential(state) {
 export function shouldIgnoreNativeInvalidation(state) {
   return Boolean(state?.webAuthenticated);
 }
+
+export function shouldDeferNativeInvalidation(state) {
+  return Boolean(state?.nativeValidation === 'invalid' && !state?.webAuthenticated);
+}

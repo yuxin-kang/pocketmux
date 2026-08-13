@@ -3,6 +3,22 @@ use std::{
     time::Duration,
 };
 
+macro_rules! auth_info {
+    ($($arg:tt)*) => {{
+        log::info!($($arg)*);
+        #[cfg(target_os = "android")]
+        eprintln!($($arg)*);
+    }};
+}
+
+macro_rules! auth_error {
+    ($($arg:tt)*) => {{
+        log::error!($($arg)*);
+        #[cfg(target_os = "android")]
+        eprintln!($($arg)*);
+    }};
+}
+
 use reqwest::StatusCode;
 use serde::Deserialize;
 #[cfg(desktop)]
@@ -98,6 +114,21 @@ fn token_account(server_url: &str) -> String {
     format!("connection:{server_url}")
 }
 
+fn server_origin(server_url: &str) -> String {
+    reqwest::Url::parse(server_url)
+        .map(|url| {
+            format!(
+                "{}://{}{}",
+                url.scheme(),
+                url.host_str().unwrap_or("<unknown>"),
+                url.port()
+                    .map(|port| format!(":{port}"))
+                    .unwrap_or_default()
+            )
+        })
+        .unwrap_or_else(|_| "<invalid-url>".into())
+}
+
 fn health_url(base_url: &reqwest::Url) -> Result<reqwest::Url, ()> {
     base_url.join("api/health").map_err(|_| ())
 }
@@ -149,13 +180,18 @@ async fn validate_token(
     token: String,
 ) -> Result<String, String> {
     authorize_shell(&webview, &shell_session, &session_token)?;
+    let origin = server_origin(&server_url);
+    auth_info!("[pocketmux-auth] native validation start origin={origin}");
     let Ok(base_url) = reqwest::Url::parse(&server_url) else {
+        auth_info!("[pocketmux-auth] native validation result origin={origin} outcome=unknown reason=invalid-url");
         return Ok("unknown".into());
     };
     if !matches!(base_url.scheme(), "http" | "https") || token.trim().is_empty() {
+        auth_info!("[pocketmux-auth] native validation result origin={origin} outcome=unknown reason=invalid-input");
         return Ok("unknown".into());
     }
     let Ok(health_url) = health_url(&base_url) else {
+        auth_info!("[pocketmux-auth] native validation result origin={origin} outcome=unknown reason=health-url");
         return Ok("unknown".into());
     };
     let Ok(client) = reqwest::Client::builder()
@@ -163,27 +199,46 @@ async fn validate_token(
         .redirect(reqwest::redirect::Policy::none())
         .build()
     else {
+        auth_info!("[pocketmux-auth] native validation result origin={origin} outcome=unknown reason=client");
         return Ok("unknown".into());
     };
 
-    Ok(
-        match client.get(health_url).bearer_auth(token).send().await {
-            Ok(response) => {
-                let status = response.status();
-                let pocketmux_identity = has_pocketmux_identity(response.headers());
-                if !status.is_success() {
-                    return Ok(classify_token_validation(status, pocketmux_identity, None).into());
-                }
+    let outcome = match client.get(health_url).bearer_auth(token).send().await {
+        Ok(response) => {
+            let status = response.status();
+            let pocketmux_identity = has_pocketmux_identity(response.headers());
+            if !status.is_success() {
+                auth_info!(
+                    "[pocketmux-auth] native validation response origin={origin} status={} identity={pocketmux_identity}",
+                    status.as_u16()
+                );
+                classify_token_validation(status, pocketmux_identity, None).into()
+            } else {
                 match response.json::<HealthResponse>().await {
                     Ok(health) => {
+                        auth_info!(
+                            "[pocketmux-auth] native validation response origin={origin} status={} identity={pocketmux_identity}",
+                            status.as_u16()
+                        );
                         classify_token_validation(status, pocketmux_identity, Some(&health)).into()
                     }
-                    Err(_) => "unknown".into(),
+                    Err(_) => {
+                        auth_info!(
+                            "[pocketmux-auth] native validation body failed origin={origin} status={}",
+                            status.as_u16()
+                        );
+                        "unknown".into()
+                    }
                 }
             }
-            Err(_) => "unknown".into(),
-        },
-    )
+        }
+        Err(_) => {
+            auth_info!("[pocketmux-auth] native validation request failed origin={origin}");
+            "unknown".into()
+        }
+    };
+    auth_info!("[pocketmux-auth] native validation result origin={origin} outcome={outcome}");
+    Ok(outcome)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -195,19 +250,37 @@ async fn get_connection_tokens(
     server_urls: Vec<String>,
 ) -> Result<Vec<Result<Option<String>, String>>, String> {
     authorize_shell(&webview, &shell_session, &session_token)?;
+    auth_info!(
+        "[pocketmux-auth] keyring read start servers={}",
+        server_urls.len()
+    );
     let store = app.keyring().store.clone();
     tauri::async_runtime::spawn_blocking(move || {
         server_urls
             .into_iter()
             .map(|server_url| {
-                store
+                let origin = server_origin(&server_url);
+                let result = store
                     .get_password(&token_account(&server_url))
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string());
+                match &result {
+                    Ok(Some(_)) => {
+                        auth_info!("[pocketmux-auth] keyring read found origin={origin}")
+                    }
+                    Ok(None) => auth_info!("[pocketmux-auth] keyring read missing origin={origin}"),
+                    Err(error) => auth_error!(
+                        "[pocketmux-auth] keyring read failed origin={origin} error={error}"
+                    ),
+                }
+                result
             })
             .collect()
     })
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|error| {
+        auth_error!("[pocketmux-auth] keyring read task failed error={error}");
+        error.to_string()
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -224,6 +297,8 @@ async fn set_connection_token(
     if token.trim().is_empty() {
         return Err("token must not be empty".into());
     }
+    let origin = server_origin(&server_url);
+    auth_info!("[pocketmux-auth] keyring write start origin={origin}");
     let account = token_account(&server_url);
     let store = app.keyring().store.clone();
     let mutation_lock = Arc::clone(&lock.0);
@@ -235,7 +310,16 @@ async fn set_connection_token(
         })
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        auth_error!("[pocketmux-auth] keyring write task failed origin={origin} error={error}");
+        error.to_string()
+    })?
+    .map_err(|error| {
+        auth_error!("[pocketmux-auth] keyring write failed origin={origin} error={error}");
+        error
+    })?;
+    auth_info!("[pocketmux-auth] keyring write success origin={origin}");
+    Ok(())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -248,6 +332,8 @@ async fn delete_connection_token(
     server_url: String,
 ) -> Result<(), String> {
     authorize_shell(&webview, &shell_session, &session_token)?;
+    let origin = server_origin(&server_url);
+    auth_info!("[pocketmux-auth] keyring delete start origin={origin}");
     let account = token_account(&server_url);
     let store = app.keyring().store.clone();
     let mutation_lock = Arc::clone(&lock.0);
@@ -257,7 +343,16 @@ async fn delete_connection_token(
         })
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        auth_error!("[pocketmux-auth] keyring delete task failed origin={origin} error={error}");
+        error.to_string()
+    })?
+    .map_err(|error| {
+        auth_error!("[pocketmux-auth] keyring delete failed origin={origin} error={error}");
+        error
+    })?;
+    auth_info!("[pocketmux-auth] keyring delete success origin={origin}");
+    Ok(())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -271,6 +366,8 @@ async fn reject_connection_token(
     expected_token: String,
 ) -> Result<Option<String>, String> {
     authorize_shell(&webview, &shell_session, &session_token)?;
+    let origin = server_origin(&server_url);
+    auth_info!("[pocketmux-auth] keyring reject start origin={origin}");
     let account = token_account(&server_url);
     let store = app.keyring().store.clone();
     let mutation_lock = Arc::clone(&lock.0);
@@ -287,14 +384,29 @@ async fn reject_connection_token(
         })
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| {
+        auth_error!("[pocketmux-auth] keyring reject task failed origin={origin} error={error}");
+        error.to_string()
+    })
+    .and_then(|result| {
+        match &result {
+            Ok(Some(_)) => {
+                auth_info!("[pocketmux-auth] keyring reject kept newer token origin={origin}")
+            }
+            Ok(None) => auth_info!("[pocketmux-auth] keyring reject deleted token origin={origin}"),
+            Err(error) => {
+                auth_error!("[pocketmux-auth] keyring reject failed origin={origin} error={error}")
+            }
+        }
+        result
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         authorize_shell_context, classify_token_validation, has_pocketmux_identity, health_url,
-        token_account, with_credential_lock, HealthResponse,
+        server_origin, token_account, with_credential_lock, HealthResponse,
     };
     use reqwest::{header::HeaderMap, StatusCode};
     use std::{
@@ -368,6 +480,15 @@ mod tests {
             token_account("https://demo.example/tools/"),
             "connection:https://demo.example/tools/"
         );
+    }
+
+    #[test]
+    fn diagnostic_server_labels_never_include_path_or_query_data() {
+        assert_eq!(
+            server_origin("https://demo.example/tools/?token=secret"),
+            "https://demo.example"
+        );
+        assert_eq!(server_origin("not a url"), "<invalid-url>");
     }
 
     #[test]

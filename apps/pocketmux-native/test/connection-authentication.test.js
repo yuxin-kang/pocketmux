@@ -5,6 +5,7 @@ import {
   beginConnectionAuthentication,
   recordNativeValidation,
   recordWebAuthentication,
+  shouldDeferNativeInvalidation,
   shouldIgnoreNativeInvalidation,
   shouldPersistAuthenticatedCredential,
 } from '../src/connection-authentication.js';
@@ -24,6 +25,12 @@ test('persists after Web authentication even when Native validation is unknown',
 
   assert.equal(shouldPersistAuthenticatedCredential(state), true);
   assert.equal(shouldIgnoreNativeInvalidation(state), true);
+});
+
+test('defers a native invalid result until the WebView confirms authentication', () => {
+  const state = recordNativeValidation(beginConnectionAuthentication(), 'invalid');
+  assert.equal(shouldDeferNativeInvalidation(state), true);
+  assert.equal(shouldDeferNativeInvalidation(recordWebAuthentication(state)), false);
 });
 
 test('Native valid validation is a persistence fallback without Web acknowledgement', () => {

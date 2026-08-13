@@ -2989,6 +2989,7 @@ dependencies = [
 name = "pocketmux-native"
 version = "0.1.0"
 dependencies = [
+ "log",
  "reqwest",
  "serde",
  "tauri",
