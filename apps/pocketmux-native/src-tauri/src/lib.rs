@@ -133,30 +133,35 @@ fn health_url(base_url: &reqwest::Url) -> Result<reqwest::Url, ()> {
     base_url.join("api/health").map_err(|_| ())
 }
 
+fn register_shell_session_context(
+    webview_label: &str,
+    session: &mut Option<String>,
+    session_token: String,
+) -> Result<(), String> {
+    if webview_label != "main"
+        || session_token.len() != 64
+        || !session_token.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("invalid native shell session".into());
+    }
+    // A renderer reload can create a new JS shell while the Rust process and
+    // its WebView window remain alive. The new token replaces the old token
+    // atomically; all commands using the old token then fail authorization.
+    *session = Some(session_token);
+    Ok(())
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn register_shell_session(
     webview: tauri::WebviewWindow,
     shell_session: tauri::State<'_, ShellSession>,
     session_token: String,
 ) -> Result<(), String> {
-    if webview.label() != "main"
-        || session_token.len() != 64
-        || !session_token.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err("invalid native shell session".into());
-    }
     let mut session = shell_session
         .0
         .lock()
         .map_err(|_| "native shell session is unavailable".to_string())?;
-    match session.as_deref() {
-        Some(existing) if existing == session_token => Ok(()),
-        Some(_) => Err("native shell session is already registered".into()),
-        None => {
-            *session = Some(session_token);
-            Ok(())
-        }
-    }
+    register_shell_session_context(webview.label(), &mut session, session_token)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -406,7 +411,8 @@ async fn reject_connection_token(
 mod tests {
     use super::{
         authorize_shell_context, classify_token_validation, has_pocketmux_identity, health_url,
-        server_origin, token_account, with_credential_lock, HealthResponse,
+        register_shell_session_context, server_origin, token_account, with_credential_lock,
+        HealthResponse,
     };
     use reqwest::{header::HeaderMap, StatusCode};
     use std::{
@@ -497,6 +503,34 @@ mod tests {
         assert!(authorize_shell_context("remote", Some("secret"), "secret").is_err());
         assert!(authorize_shell_context("main", Some("secret"), "attacker").is_err());
         assert!(authorize_shell_context("main", None, "secret").is_err());
+    }
+
+    #[test]
+    fn shell_session_rotation_replaces_old_token_and_invalidates_it() {
+        let first = "a".repeat(64);
+        let second = "b".repeat(64);
+        let mut session = None;
+
+        assert!(register_shell_session_context("main", &mut session, first.clone()).is_ok());
+        assert_eq!(session.as_deref(), Some(first.as_str()));
+        assert!(register_shell_session_context("main", &mut session, second.clone()).is_ok());
+        assert_eq!(session.as_deref(), Some(second.as_str()));
+        assert!(authorize_shell_context("main", session.as_deref(), &first).is_err());
+        assert!(authorize_shell_context("main", session.as_deref(), &second).is_ok());
+    }
+
+    #[test]
+    fn invalid_or_non_main_shell_registration_cannot_replace_session() {
+        let existing = "a".repeat(64);
+        let mut session = Some(existing.clone());
+
+        assert!(register_shell_session_context("remote", &mut session, "b".repeat(64)).is_err());
+        assert_eq!(session.as_deref(), Some(existing.as_str()));
+        assert!(
+            register_shell_session_context("main", &mut session, "not-a-session".to_string())
+                .is_err()
+        );
+        assert_eq!(session.as_deref(), Some(existing.as_str()));
     }
 
     #[test]

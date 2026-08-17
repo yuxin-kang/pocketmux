@@ -42,6 +42,24 @@ test('a failed shell registration returns no privileged invoke bridge', async ()
   assert.deepEqual(errors, ['registration failed']);
 });
 
+test('a missing bridge is not cached as a successful shell registration', async () => {
+  let bridgeAvailable = false;
+  let attempts = 0;
+  const invoke = () => {};
+  const errors = [];
+  const session = createNativeShellSession({
+    initialize: async () => { attempts += 1; },
+    getInvoke: () => (bridgeAvailable ? invoke : null),
+    onInitializationError: (error) => errors.push(error.message),
+  });
+
+  assert.equal(await session.readyInvoke(), null);
+  bridgeAvailable = true;
+  assert.equal(await session.readyInvoke(), invoke);
+  assert.equal(attempts, 2);
+  assert.deepEqual(errors, ['native bridge unavailable']);
+});
+
 test('shell registration can be retried after a transient failure', async () => {
   let attempts = 0;
   const invoke = () => {};

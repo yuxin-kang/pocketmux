@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "check": "node --check src/connection.js && node --check src/connection-initialization.js && node --check src/connection-navigation.js && node --check src/connection-operations.js && node --check src/connection-switch.js && node --check src/connection-validation.js && node --check src/connection-authentication.js && node --check src/credential-migration.js && node --check src/drawer-gesture.js && node --check src/error-state.js && node --check src/floating-handle.js && node --check src/i18n.js && node --check src/native-shell-session.js && node --check src/rejected-credential.js && node --check src/remote-viewport.js && node --check src/storage.js && node --check src/remote-session.js && node --check src/validated-credential.js && node --check src/main.js",
+    "check": "node --check src/connection.js && node --check src/connection-initialization.js && node --check src/connection-navigation.js && node --check src/connection-operations.js && node --check src/connection-switch.js && node --check src/connection-validation.js && node --check src/connection-authentication.js && node --check src/credential-migration.js && node --check src/credential-read.js && node --check src/drawer-gesture.js && node --check src/error-state.js && node --check src/floating-handle.js && node --check src/i18n.js && node --check src/native-shell-session.js && node --check src/rejected-credential.js && node --check src/remote-viewport.js && node --check src/storage.js && node --check src/remote-session.js && node --check src/validated-credential.js && node --check src/main.js",
     "test": "node --test",
     "dev": "tauri dev",
     "build": "tauri build",

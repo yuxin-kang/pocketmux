@@ -19,3 +19,8 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# The Android keyring crate resolves this class and its companion through the
+# generated JNI name. Keep both names and the external method unchanged.
+-keep class io.crates.keyring.Keyring { *; }
+-keep class io.crates.keyring.Keyring$Companion { *; }

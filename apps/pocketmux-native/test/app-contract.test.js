@@ -87,8 +87,8 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   const capability = JSON.parse(capabilityText);
 
   assert.match(html, /连接后会直接打开原有网页界面/);
-  assert.match(html, /styles\.css\?v=20260813-legacy-server-1020/);
-  assert.match(html, /main\.js\?v=20260813-legacy-server-1020/);
+  assert.match(html, /styles\.css\?v=20260813-token-recovery-1022/);
+  assert.match(html, /main\.js\?v=20260813-token-recovery-1022/);
   assert.match(html, /id="remote-menu-toggle"[^>]+aria-expanded="false"[\s\S]*?<span aria-hidden="true">›<\/span>/);
   assert.match(html, /id="remote-drawer"[^>]+aria-hidden="true"[^>]+inert/);
   assert.match(html, /id="refresh-remote"/);
@@ -191,6 +191,9 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /await ensureShellSession\(\)[\s\S]*?await initializeNativeApp\(\)/);
   assert.match(main, /window\.crypto\.getRandomValues\(bytes\)/);
   assert.match(main, /invoke\('register_shell_session', \{ sessionToken \}\)/);
+  assert.match(main, /if \(!invoke\) throw new Error\('native bridge unavailable'\)/);
+  assert.match(main, /await initializeNativeApp\(\)/);
+  assert.match(main, /shell-unavailable-during-boot/);
   assert.match(main, /sessionToken: shellSessionToken/);
   assert.match(main, /event\.source !== elements\.remoteFrame\.contentWindow/);
   assert.match(main, /event\.origin !== new URL\(remoteSession\.serverUrl\)\.origin/);
@@ -218,6 +221,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(rust, /fn exit_app\(/);
   assert.match(rust, /app\.exit\(0\)/);
   assert.match(rust, /fn register_shell_session\(/);
+  assert.match(rust, /\*session = Some\(session_token\)/);
   assert.match(rust, /fn authorize_shell_context\(/);
   assert.match(rust, /webview_label != "main"/);
   assert.match(rust, /expected_session != Some\(provided_session\)/);
@@ -253,7 +257,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.windows[0].generalAutofillEnabled, false);
   assert.equal(config.identifier, 'io.github.yuxinkang.pocketmux');
-  assert.equal(config.bundle.android.versionCode, 1020);
+  assert.equal(config.bundle.android.versionCode, 1022);
   assert.match(config.app.security.csp, /frame-src http: https:/);
   assert.deepEqual(capability.permissions, ['core:default']);
   assert.equal('remote' in capability, false);
@@ -341,6 +345,24 @@ test('keeps all keyring operations off the synchronous Tauri IPC thread', async 
   assert.match(rust, /async fn delete_connection_token\(/);
   assert.match(rust, /async fn reject_connection_token\(/);
   assert.equal((rust.match(/tauri::async_runtime::spawn_blocking/g) || []).length, 4);
+});
+
+test('initializes Android ndk-context before keyring access', async () => {
+  const [activity, bridge, proguard] = await Promise.all([
+    readFile(path.join(root, 'src-tauri', 'gen', 'android', 'app', 'src', 'main', 'java', 'io', 'github', 'yuxinkang', 'pocketmux', 'MainActivity.kt'), 'utf8'),
+    readFile(path.join(root, 'src-tauri', 'gen', 'android', 'app', 'src', 'main', 'java', 'io', 'crates', 'keyring', 'Keyring.kt'), 'utf8'),
+    readFile(path.join(root, 'src-tauri', 'gen', 'android', 'app', 'proguard-rules.pro'), 'utf8'),
+  ]);
+
+  assert.match(bridge, /package io\.crates\.keyring/);
+  assert.match(bridge, /class Keyring/);
+  assert.match(bridge, /companion object/);
+  assert.match(bridge, /external fun initializeNdkContext\(context: Context\)/);
+  assert.doesNotMatch(bridge, /@JvmStatic/);
+  assert.match(activity, /io\.crates\.keyring\.Keyring\.initializeNdkContext\(applicationContext\)/);
+  assert.match(activity, /initializeNdkContext\(applicationContext\)[\s\S]*?super\.onCreate/);
+  assert.match(proguard, /-keep class io\.crates\.keyring\.Keyring \{ \*; \}/);
+  assert.match(proguard, /-keep class io\.crates\.keyring\.Keyring\$Companion \{ \*; \}/);
 });
 
 test('diagnoses credential persistence without logging access tokens', async () => {

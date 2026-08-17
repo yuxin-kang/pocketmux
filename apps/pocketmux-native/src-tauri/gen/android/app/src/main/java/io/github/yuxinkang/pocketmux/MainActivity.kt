@@ -18,6 +18,10 @@ class MainActivity : TauriActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     activityDestroyed = false
+    // android-native-keyring-store obtains the Android application context
+    // through ndk-context. Initialize it before Tauri can issue any keyring
+    // command (including the startup credential hydrate).
+    io.crates.keyring.Keyring.initializeNdkContext(applicationContext)
     enableEdgeToEdge(
       statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
       navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),

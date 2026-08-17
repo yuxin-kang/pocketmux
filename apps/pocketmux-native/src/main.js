@@ -31,6 +31,10 @@ import {
 import { messages, normalizeLanguage } from './i18n.js';
 import { createNativeShellSession } from './native-shell-session.js';
 import {
+  mergeCredentialReadResults,
+  withCredentialReadTimeout,
+} from './credential-read.js';
+import {
   normalizeNativeViewportHeight,
   resolveRemoteViewportHeight,
 } from './remote-viewport.js';
@@ -56,6 +60,8 @@ const REMOTE_HANDLE_MARGIN_PX = 12;
 const REMOTE_LOAD_TIMEOUT_MS = 15000;
 const REMOTE_REVEAL_DELAY_MS = 400;
 const CREDENTIAL_READ_TIMEOUT_MS = 5000;
+const CREDENTIAL_READ_RETRY_DELAY_MS = 1000;
+const CREDENTIAL_DRAIN_TIMEOUT_MS = 10000;
 const REMOTE_LANGUAGE_MESSAGE_TYPE = 'pocketmux:language';
 const REMOTE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required';
 const REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded';
@@ -141,6 +147,9 @@ const authenticatedTargets = new Map();
 const connectionAttempts = new Map();
 let credentialMutationQueue = Promise.resolve();
 let shellSessionToken = '';
+let credentialHydrationGeneration = 0;
+let lateCredentialRecoveryStarted = false;
+let exitRequested = false;
 
 function authDebug(event, details = {}) {
   console.info('[pocketmux-auth]', event, details);
@@ -253,7 +262,7 @@ function createShellSessionToken() {
 
 async function initializeShellSession() {
   const invoke = window.__TAURI__?.core?.invoke;
-  if (!invoke) return;
+  if (!invoke) throw new Error('native bridge unavailable');
   const sessionToken = createShellSessionToken();
   await invoke('register_shell_session', { sessionToken });
   shellSessionToken = sessionToken;
@@ -269,14 +278,6 @@ const nativeShellSession = createNativeShellSession({
 
 const ensureShellSession = nativeShellSession.ensure;
 const nativeCredentialInvoke = nativeShellSession.readyInvoke;
-
-function withTimeout(promise, timeoutMs) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = window.setTimeout(() => reject(new Error('credential-read-timeout')), timeoutMs);
-  });
-  return Promise.race([promise, timeout]).finally(() => window.clearTimeout(timer));
-}
 
 function queueCredentialMutation(mutation) {
   const result = credentialMutationQueue.then(mutation, mutation);
@@ -470,44 +471,126 @@ async function hydrateConnectionTokens() {
       return { complete: true, states: new Map() };
     }
     const serverUrls = connectionProfiles.map((profile) => profile.serverUrl);
-    try {
-      const results = await withTimeout(
-        invoke('get_connection_tokens', { serverUrls }),
-        CREDENTIAL_READ_TIMEOUT_MS,
-      );
-      let complete = true;
-      const states = new Map();
-      serverUrls.forEach((serverUrl, index) => {
-        const result = results?.[index];
-        if (!result || typeof result !== 'object' || !('Ok' in result)) {
-          complete = false;
-          states.set(serverUrl, 'unknown');
-          return;
-        }
-        const token = typeof result.Ok === 'string' ? result.Ok.trim() : '';
-        if (token) {
-          connectionTokens.set(serverUrl, token);
-          states.set(serverUrl, 'present');
-        } else {
-          states.set(serverUrl, 'missing');
-        }
-      });
+    const hydrationGeneration = ++credentialHydrationGeneration;
+    const hydrationOperation = connectionOperations.current();
+    let retryScheduled = false;
+    const applyResults = (results, event = 'read-complete') => {
+      const states = mergeCredentialReadResults(connectionTokens, serverUrls, results);
       rebuildAuthenticatedTargets();
-      authDebug('read-complete', {
+      if (initializationSettled) renderRecentServers();
+      authDebug(event, {
         servers: serverUrls.length,
         present: [...states.values()].filter((state) => state === 'present').length,
         missing: [...states.values()].filter((state) => state === 'missing').length,
         unknown: [...states.values()].filter((state) => state === 'unknown').length,
       });
-      return { complete, states };
+      return states;
+    };
+    const restoreAfterLateRead = () => {
+      if (
+        hydrationGeneration !== credentialHydrationGeneration
+        || !initializationSettled
+        || !connectionOperations.isCurrent(hydrationOperation)
+        || !elements.remoteShell.classList.contains('is-hidden')
+        || lateCredentialRecoveryStarted
+      ) return;
+      const profile = connectionProfiles[0];
+      if (!profile || !connectionTokens.get(profile.serverUrl)) return;
+      lateCredentialRecoveryStarted = true;
+      authDebug('read-late-restore', { serverUrl: profile.serverUrl });
+      void restoreMostRecentConnection().catch((error) => {
+        lateCredentialRecoveryStarted = false;
+        console.warn('Pocketmux late credential restore failed', error);
+      });
+    };
+    const scheduleReadRetry = () => {
+      if (retryScheduled) return;
+      retryScheduled = true;
+      window.setTimeout(() => {
+        if (
+          hydrationGeneration !== credentialHydrationGeneration
+          || !connectionOperations.isCurrent(hydrationOperation)
+        ) return;
+        authDebug('read-retry-start', { servers: serverUrls.length });
+        const retryPromise = invoke('get_connection_tokens', { serverUrls });
+        void withCredentialReadTimeout(retryPromise, CREDENTIAL_READ_TIMEOUT_MS, {
+          onLateValue: (results) => {
+            if (hydrationGeneration !== credentialHydrationGeneration) return;
+            const states = applyResults(results, 'read-retry-late-complete');
+            restoreAfterLateRead();
+            if ([...states.values()].includes('unknown')) authDebug('read-retry-remains-unknown');
+          },
+          onLateError: (error) => {
+            authDebug('read-retry-late-failed', { error: String(error) });
+          },
+        }).then((results) => {
+          const states = applyResults(results, 'read-retry-complete');
+          restoreAfterLateRead();
+          return states;
+        }).catch((error) => {
+          authDebug('read-retry-failed', { error: String(error) });
+        });
+      }, CREDENTIAL_READ_RETRY_DELAY_MS);
+    };
+    const readPromise = invoke('get_connection_tokens', { serverUrls });
+    try {
+      const results = await withCredentialReadTimeout(
+        readPromise,
+        CREDENTIAL_READ_TIMEOUT_MS,
+        {
+          onLateValue: (results) => {
+            if (hydrationGeneration !== credentialHydrationGeneration) return;
+            const states = applyResults(results, 'read-late-complete');
+            restoreAfterLateRead();
+            if ([...states.values()].includes('unknown')) scheduleReadRetry();
+          },
+          onLateError: (error) => {
+            authDebug('read-late-failed', { error: String(error) });
+            scheduleReadRetry();
+          },
+        },
+      );
+      const states = applyResults(results);
+      if ([...states.values()].includes('unknown')) scheduleReadRetry();
+      return { complete: ![...states.values()].includes('unknown'), states };
     } catch (error) {
       authDebug('read-failed', { error: String(error) });
+      const timedOut = error?.message === 'credential-read-timeout';
+      if (timedOut) authDebug('read-timeout-late-result-retained');
+      if (!timedOut) scheduleReadRetry();
       return {
         complete: false,
         states: new Map(serverUrls.map((serverUrl) => [serverUrl, 'unknown'])),
       };
     }
   });
+}
+
+async function drainCredentialPersistence() {
+  const pending = [
+    credentialMutationQueue,
+    ...[...connectionAttempts.values()]
+      .map((attempt) => attempt.persistencePromise)
+      .filter(Boolean),
+  ];
+  const uniquePending = [...new Set(pending)];
+  if (uniquePending.length === 0) return true;
+
+  let timer;
+  const drained = Promise.allSettled(uniquePending).then((results) => {
+    authDebug('exit-drain-complete', {
+      pending: uniquePending.length,
+      rejected: results.filter((result) => result.status === 'rejected').length,
+    });
+    return true;
+  });
+  const timeout = new Promise((resolve) => {
+    timer = window.setTimeout(() => resolve(false), CREDENTIAL_DRAIN_TIMEOUT_MS);
+  });
+  const completed = await Promise.race([drained, timeout]);
+  window.clearTimeout(timer);
+  if (!completed) authDebug('exit-drain-timeout', { pending: uniquePending.length });
+  return completed;
 }
 
 async function migrateLegacyConnectionTokens(existingCredentialStates) {
@@ -1085,6 +1168,7 @@ async function monitorConnectionValidation(
 }
 
 async function navigateToServer(serverInput, tokenInput = '', { pushHistory = true } = {}) {
+  if (exitRequested) return false;
   const candidate = buildRemoteConnection(serverInput, tokenInput);
   const savedToken = connectionTokens.get(candidate.serverUrl) || '';
   const connection = tokenInput || candidate.hasToken || !savedToken
@@ -1199,17 +1283,30 @@ function addConnection() {
 }
 
 async function exitNativeApp() {
+  if (exitRequested) return;
   const invoke = nativeInvoke();
   if (!invoke) {
     elements.remoteNotice.textContent = text('remote.exitUnavailable');
     return;
   }
+  exitRequested = true;
   elements.exitApp.disabled = true;
   try {
+    if (!await drainCredentialPersistence()) {
+      exitRequested = false;
+      elements.exitApp.disabled = false;
+      const message = text('error.storageUnavailable');
+      if (elements.remoteShell.classList.contains('is-hidden')) setError(message);
+      else elements.remoteNotice.textContent = message;
+      return;
+    }
     await invoke('exit_app');
   } catch {
+    exitRequested = false;
     elements.exitApp.disabled = false;
-    elements.remoteNotice.textContent = text('remote.exitFailed');
+    const message = text('remote.exitFailed');
+    if (elements.remoteShell.classList.contains('is-hidden')) setError(message);
+    else elements.remoteNotice.textContent = message;
   }
 }
 
@@ -1489,10 +1586,15 @@ async function initializeNativeApp() {
 async function bootNativeApp() {
   try {
     await ensureShellSession();
+  } catch {
+    authDebug('shell-unavailable-during-boot');
+  }
+  try {
     await initializeNativeApp();
   } catch {
     initializationSettled = true;
     setError(text('error.storageUnavailable'));
+    authDebug('native-app-initialization-failed');
   }
 }
 

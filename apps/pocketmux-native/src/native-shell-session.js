@@ -9,7 +9,11 @@ export function createNativeShellSession({ initialize, getInvoke, onInitializati
       } catch (error) {
         initialization = Promise.reject(error);
       }
-      initializationPromise = Promise.resolve(initialization).catch((error) => {
+      initializationPromise = Promise.resolve(initialization).then(() => {
+        const invoke = getInvoke();
+        if (!invoke) throw new Error('native bridge unavailable');
+        return invoke;
+      }).catch((error) => {
         initializationPromise = null;
         throw error;
       });
@@ -21,12 +25,11 @@ export function createNativeShellSession({ initialize, getInvoke, onInitializati
     ensure,
     async readyInvoke() {
       try {
-        await ensure();
+        return await ensure();
       } catch (error) {
         onInitializationError(error);
         return null;
       }
-      return getInvoke();
     },
   });
 }
