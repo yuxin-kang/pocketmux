@@ -273,7 +273,13 @@
     const error = new Error(localizedMessages[state.language]);
     error.localizedMessages = localizedMessages;
     error.status = status;
+    error.code = payload.code || payload.error || '';
+    error.partial = payload.partial === true;
     return error;
+  }
+
+  function paneStaleError() {
+    return responseError({ code: 'pane_stale' }, 409, 'error.paneStale');
   }
 
   function setConnection(key, kind = 'online') {
@@ -659,6 +665,11 @@
     return selectedSession()?.panes.find((pane) => pane.id === state.selectedPane) || null;
   }
 
+  function preferredLivePane(session) {
+    const panes = (session?.panes || []).filter((pane) => !pane.dead);
+    return panes.find((pane) => pane.codex) || panes[0] || null;
+  }
+
   function isZshPane(pane) {
     return Boolean(
       pane
@@ -997,8 +1008,8 @@
           state.selectedSession = nextSession;
         }
         const nextSession = selectedSession();
-        if (!nextSession?.panes.some((pane) => pane.id === state.selectedPane)) {
-          const nextPane = nextSession?.panes.find((pane) => pane.codex)?.id || nextSession?.panes[0]?.id || '';
+        if (!nextSession?.panes.some((pane) => pane.id === state.selectedPane && !pane.dead)) {
+          const nextPane = preferredLivePane(nextSession)?.id || '';
           selectionChanged = selectionChanged || nextPane !== state.selectedPane;
           state.selectedPane = nextPane;
           state.output = '';
@@ -1074,7 +1085,7 @@
   async function selectSession(name) {
     state.selectedSession = name;
     const session = selectedSession();
-    state.selectedPane = session?.panes.find((pane) => pane.codex)?.id || session?.panes[0]?.id || '';
+    state.selectedPane = preferredLivePane(session)?.id || '';
     state.zshSuggestion = null;
     state.output = '';
     renderAll();
@@ -1358,6 +1369,10 @@
       return;
     }
     const pane = selectedPane();
+    if (!pane || pane.dead) {
+      showTranslatedToast('validation.selectAvailablePane', 'error');
+      return;
+    }
     const executeAcceptedZsh = !hasAttachments
       && isZshPane(pane)
       && hasAcceptedZshSuggestion(text);
@@ -1399,19 +1414,34 @@
         const uploads = await resolveAttachmentUploads(messageAttachments, uploadAttachment);
         attachmentIds = uploads.map((upload) => upload.attachmentId);
       }
-      await api(`/api/panes/${encodeURIComponent(paneId)}/input`, {
-        method: 'POST',
-        body: { text, submit: true, ...(attachmentIds.length > 0 ? { attachmentIds } : {}) },
-      });
+      if (state.selectedPane !== paneId) {
+        await refreshSessions({ quiet: true });
+        throw paneStaleError();
+      }
+      const inputPath = `/api/panes/${encodeURIComponent(paneId)}/input`;
+      const inputBody = { text, submit: true, ...(attachmentIds.length > 0 ? { attachmentIds } : {}) };
+      try {
+        await api(inputPath, { method: 'POST', body: inputBody });
+      } catch (error) {
+        // A tmux server restart can briefly make pane discovery fail. The
+        // message has not been pasted when this code is returned, so one
+        // bounded retry is safe and avoids making users re-upload files.
+        if (error.code !== 'tmux_unavailable') throw error;
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        await refreshSessions({ quiet: true });
+        if (state.selectedPane !== paneId) throw paneStaleError();
+        await api(inputPath, { method: 'POST', body: inputBody });
+      }
       elements.messageInput.value = '';
       elements.messageInput.style.height = 'auto';
       clearSelectedAttachments();
       showTranslatedToast('message.sent', 'success');
       if (state.selectedPane === paneId) await loadOutput({ quiet: true });
     } catch (error) {
-      if (error.status === 404) {
+      if (error.code === 'attachment_not_found') {
         messageAttachments.forEach((attachment) => { attachment.upload = null; });
       }
+      if (error.code === 'pane_stale') await refreshSessions({ quiet: true });
       if (error.unauthorized) forgetToken();
       else showErrorToast(error);
     } finally {

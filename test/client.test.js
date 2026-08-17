@@ -130,6 +130,9 @@ test('client wiring uses the reviewed helpers and no metadata deduplication key'
   const source = await fsp.readFile(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   assert.match(source, /findPaneById\(state\.sessions, state\.renameTargetPaneId\)/);
   assert.match(source, /resolveAttachmentUploads\(messageAttachments, uploadAttachment\)/);
+  assert.match(source, /state\.selectedPane !== paneId/);
+  assert.match(source, /error\.code === 'attachment_not_found'/);
+  assert.match(source, /preferredLivePane\(nextSession\)/);
   assert.doesNotMatch(source, /attachmentSelectionKey|selectedKeys/);
   assert.doesNotMatch(source, /[\u4e00-\u9fff]/, 'dynamic UI copy belongs in the translation catalog');
 });

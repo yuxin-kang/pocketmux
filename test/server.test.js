@@ -69,9 +69,9 @@ test('mobile composer keeps long input visible above the soft keyboard', async (
   assert.match(app, /shouldAutoScrollTerminal\(\{/);
   assert.match(styles, /body\.message-input-active \.app-shell \{ padding-bottom: var\(--keyboard-inset\); \}/);
   assert.match(styles, /\.composer-form textarea \{[^}]*overflow-y: auto;/);
-  assert.match(html, /i18n\.js\?v=20260810-language-switch/);
+  assert.match(html, /i18n\.js\?v=20260817-attachment-tmux-fix/);
   assert.match(html, /app-helpers\.js\?v=20260809-review-fixes/);
-  assert.match(html, /app\.js\?v=20260813-native-auth-bridge/);
+  assert.match(html, /app\.js\?v=20260817-attachment-tmux-fix/);
   assert.match(html, /window\.location\.replace\(`\$\{window\.location\.pathname\}\/\$\{window\.location\.search\}\$\{window\.location\.hash\}`\)/);
   assert.match(i18n, /PocketmuxI18n/);
   assert.equal((html.match(/\.\/favicon\.ico\?v=20260812-pocket-terminal/g) || []).length, 2);
@@ -110,7 +110,7 @@ test('provides a persistent and accessible Chinese-English language switch', asy
   assert.match(styles, /\.icon-button \{ width: 35px; height: 35px;/);
   assert.match(styles, /\.language-switch \{[^}]*height: 35px;/);
   assert.match(styles, /\.language-button \{[^}]*min-width: 29px;[^}]*height: 31px;/);
-  assert.match(html, /styles\.css\?v=20260813-native-auth-bridge/);
+  assert.match(html, /styles\.css\?v=20260817-attachment-tmux-fix/);
 });
 
 test('serves the browser helper loaded by the main app', async (t) => {
@@ -620,6 +620,53 @@ test('protects APIs with a token and supports session/output/input flows', async
   assert.equal(invalidKey.status, 400);
 });
 
+test('returns a retryable tmux-unavailable error when pane discovery fails', async (t) => {
+  const runner = async (args) => {
+    if (args[0] === 'list-panes') {
+      const error = new Error('no server running on /tmp/tmux-1000/default');
+      error.stderr = error.message;
+      throw error;
+    }
+    return '';
+  };
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const response = await fetch(`${base}/api/panes/%251/input`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'retry me', submit: true }),
+  });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, 'tmux_unavailable');
+});
+
+test('keeps attachment sends safe when a pane disappears during paste', async (t) => {
+  const { runner: baseRunner } = fakeTmux();
+  const runner = async (args) => {
+    if (args[0] === 'paste-buffer') {
+      const error = new Error("can't find pane: %1");
+      error.stderr = error.message;
+      throw error;
+    }
+    return baseRunner(args);
+  };
+  const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const response = await fetch(`${base}/api/panes/%251/input`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'attachment path', submit: true }),
+  });
+  assert.equal(response.status, 409);
+  const payload = await response.json();
+  assert.equal(payload.code, 'pane_stale');
+  assert.match(payload.message, /附件仍会保留/);
+});
+
 test('uploads a supported image and sends it with the prompt', async (t) => {
   const { calls, loadedBuffers, runner } = fakeTmux();
   const { server } = createRemoteToolServer({ token: 'test-token', tmuxRunner: runner });
@@ -1012,6 +1059,12 @@ test('uploads common documents through the same attachment endpoint', async (t) 
       contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       body: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
       extension: 'xlsx',
+    },
+    {
+      name: 'legacy.xls',
+      contentType: 'application/vnd.ms-excel',
+      body: Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]),
+      extension: 'xls',
     },
   ];
 

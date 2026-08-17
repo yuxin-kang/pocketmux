@@ -132,6 +132,10 @@
       'error.invalidToken': '令牌无效。',
       'error.requestFailed': '请求失败（{status}）',
       'error.uploadFailed': '附件上传失败（{status}）',
+      'error.paneStale': '当前窗口已经变化，请刷新后重试；附件仍会保留。',
+      'error.tmuxUnavailable': '服务端 tmux 暂时不可用，请确认 tmux 仍在运行后重试。',
+      'error.tmuxInjectionFailed': '附件已上传，但发送到 tmux 失败，请稍后重试。',
+      'error.attachmentStorage': '附件暂存失败，请检查服务端临时目录权限后重试。',
       'noscript': '需要启用 JavaScript 才能使用 pocketmux。',
     },
     en: {
@@ -257,6 +261,10 @@
       'error.invalidToken': 'Invalid token.',
       'error.requestFailed': 'Request failed ({status})',
       'error.uploadFailed': 'Attachment upload failed ({status})',
+      'error.paneStale': 'The selected pane changed. Refresh the sessions and try again; your attachment is kept.',
+      'error.tmuxUnavailable': 'tmux is temporarily unavailable. Make sure it is running on the host and try again.',
+      'error.tmuxInjectionFailed': 'The attachment uploaded, but sending it to tmux failed. Try again shortly.',
+      'error.attachmentStorage': 'The attachment could not be staged. Check the host temporary directory permissions and try again.',
       'noscript': 'JavaScript is required to use pocketmux.',
     },
   };

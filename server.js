@@ -155,12 +155,17 @@ const ALLOWED_KEYS = new Set([
 ]);
 
 class ApiError extends Error {
-  constructor(statusCode, message, publicMessage = message, publicMessageEn = message) {
+  constructor(statusCode, message, publicMessage = message, publicMessageEn = message, {
+    code = null,
+    partial = false,
+  } = {}) {
     super(message);
     this.name = 'ApiError';
     this.statusCode = statusCode;
     this.publicMessage = publicMessage;
     this.publicMessageEn = publicMessageEn;
+    this.apiCode = code;
+    this.partial = partial;
   }
 }
 
@@ -359,6 +364,58 @@ function isValidPaneId(value) {
   return /^%\d+$/.test(value);
 }
 
+function isPaneTargetError(error) {
+  return /can't find (?:pane|client)|pane .* not found|no such pane|invalid pane/i.test(
+    `${error?.message || ''} ${error?.stderr || ''}`,
+  );
+}
+
+function tmuxApiError(error, stage, paneId = '') {
+  if (error instanceof ApiError) return error;
+  const unavailable = isNoServerError(error)
+    || error?.code === 'TMUX_TIMEOUT'
+    || error?.code === 'ENOENT';
+  if (stage === 'find' && unavailable) {
+    return new ApiError(
+      503,
+      'tmux is unavailable',
+      '服务端 tmux 暂时不可用，请确认 tmux 仍在运行后重试。',
+      'tmux is temporarily unavailable. Make sure it is running on the host and try again.',
+      { code: 'tmux_unavailable' },
+    );
+  }
+  if (stage === 'find') {
+    return new ApiError(
+      502,
+      `tmux pane listing failed for ${paneId || 'unknown pane'}`,
+      '无法读取服务端 tmux 窗口，请稍后重试。',
+      'The host tmux panes could not be read. Try again shortly.',
+      { code: 'tmux_unavailable' },
+    );
+  }
+  if (isPaneTargetError(error)) {
+    return new ApiError(
+      409,
+      `tmux pane ${paneId || 'unknown pane'} disappeared during ${stage}`,
+      '当前窗口已经变化，请刷新会话后重试；附件仍会保留。',
+      'The selected pane changed. Refresh the sessions and try again; your attachment is kept.',
+      { code: 'pane_stale' },
+    );
+  }
+  const partial = stage === 'send-key';
+  return new ApiError(
+    502,
+    `tmux ${stage} failed for ${paneId || 'unknown pane'}`,
+    partial
+      ? '内容可能已经粘贴，但 Enter 发送失败；请先检查终端后再重试。'
+      : '附件已上传，但发送到 tmux 失败，请稍后重试。',
+    partial
+      ? 'The text may have been pasted, but Enter failed. Check the terminal before retrying.'
+      : 'The attachment uploaded, but sending it to tmux failed. Try again shortly.',
+    { code: 'tmux_injection_failed', partial },
+  );
+}
+
 function isZshPane(pane) {
   return Boolean(
     pane
@@ -393,10 +450,22 @@ async function findPane(tmuxRunner, paneId) {
   if (!isValidPaneId(paneId)) {
     throw new ApiError(400, 'Invalid pane id', '无效的 pane 标识。');
   }
-  const panes = parsePaneRows(await tmuxRunner(['list-panes', '-a', '-F', PANE_FORMAT]));
+  let output;
+  try {
+    output = await tmuxRunner(['list-panes', '-a', '-F', PANE_FORMAT]);
+  } catch (error) {
+    throw tmuxApiError(error, 'find', paneId);
+  }
+  const panes = parsePaneRows(output);
   const pane = panes.find((candidate) => candidate.id === paneId);
   if (!pane) {
-    throw new ApiError(404, 'Pane not found', '这个 pane 已经不存在，可能被关闭了。');
+    throw new ApiError(
+      409,
+      'Pane not found',
+      '这个 pane 已经不存在，可能被关闭了；请刷新会话后重试。',
+      'This pane no longer exists. Refresh the sessions and try again.',
+      { code: 'pane_stale' },
+    );
   }
   return pane;
 }
@@ -607,6 +676,38 @@ async function previewZsh(tmuxRunner, paneId, text) {
 async function cancelPaneMode(tmuxRunner, pane) {
   if (!pane.inMode || !['copy-mode', 'view-mode'].includes(pane.mode)) return;
   await tmuxRunner(['send-keys', '-X', '-t', pane.id, 'cancel']);
+}
+
+async function sendPaneInput(tmuxRunner, paneId, message, submit) {
+  const pane = await findPane(tmuxRunner, paneId);
+  if (pane.dead) {
+    throw new ApiError(
+      409,
+      `Pane ${paneId} is dead`,
+      '这个窗口中的进程已经退出；请刷新会话后选择可用窗口，附件仍会保留。',
+      'The selected pane has exited. Refresh the sessions and choose a live pane; your attachment is kept.',
+      { code: 'pane_stale' },
+    );
+  }
+  try {
+    await cancelPaneMode(tmuxRunner, pane);
+  } catch (error) {
+    throw tmuxApiError(error, 'cancel-mode', paneId);
+  }
+  if (message) {
+    try {
+      await pasteText(tmuxRunner, paneId, message);
+    } catch (error) {
+      throw tmuxApiError(error, 'paste', paneId);
+    }
+  }
+  if (submit) {
+    try {
+      await sendKey(tmuxRunner, paneId, 'Enter');
+    } catch (error) {
+      throw tmuxApiError(error, 'send-key', paneId);
+    }
+  }
 }
 
 function readRequestBody(req, maxBytes, tooLargeMessage, { timeoutMs = 0 } = {}) {
@@ -1269,7 +1370,13 @@ function createRemoteToolServer({
           await queueAttachmentMutation(pruneAttachments);
           const messageAttachments = requestedAttachmentIds.map((id) => attachments.get(id) || null);
           if (messageAttachments.some((attachment) => !attachment)) {
-            throw new ApiError(404, 'Attachment not found', '部分附件已过期，请重新选择后再发送。');
+            throw new ApiError(
+              404,
+              'Attachment not found',
+              '部分附件已过期，请重新选择后再发送。',
+              'Some attachments expired. Select them again before sending.',
+              { code: 'attachment_not_found' },
+            );
           }
           const combinedAttachmentBytes = messageAttachments.reduce((total, attachment) => total + attachment.size, 0);
           if (combinedAttachmentBytes > MAX_COMBINED_ATTACHMENT_BYTES) {
@@ -1285,12 +1392,7 @@ function createRemoteToolServer({
           if (!message && !submit) {
             throw new ApiError(400, 'Input is empty', '请输入内容，或选择一个控制键。');
           }
-          await queuePaneMutation(paneId, async () => {
-            const pane = await findPane(tmuxRunner, paneId);
-            await cancelPaneMode(tmuxRunner, pane);
-            if (message) await pasteText(tmuxRunner, paneId, message);
-            if (submit) await sendKey(tmuxRunner, paneId, 'Enter');
-          });
+          await queuePaneMutation(paneId, () => sendPaneInput(tmuxRunner, paneId, message, submit));
           sendJson(res, 200, { ok: true });
           return;
         }
@@ -1315,15 +1417,27 @@ function createRemoteToolServer({
       if (req.aborted || res.destroyed) return;
       if (error instanceof ApiError) {
         sendJson(res, error.statusCode, {
-          error: error.name,
+          error: error.apiCode || error.name,
+          code: error.apiCode || undefined,
+          partial: error.partial || undefined,
           message: error.publicMessage,
           messageEn: error.publicMessageEn,
         });
         return;
       }
       console.error('[tmux-relay]', error);
+      if (req.method === 'POST' && routePath(pathname).length === 2 && routePath(pathname)[1] === 'uploads') {
+        sendJson(res, 500, {
+          error: 'attachment_storage_error',
+          code: 'attachment_storage_error',
+          message: '附件暂存失败，请检查服务端临时目录权限后重试。',
+          messageEn: 'The attachment could not be staged. Check the host temporary directory permissions and try again.',
+        });
+        return;
+      }
       sendJson(res, 500, {
         error: 'server_error',
+        code: 'server_error',
         message: 'tmux 操作失败，请确认服务所在电脑上的 tmux 仍在运行。',
         messageEn: 'The tmux operation failed. Make sure tmux is still running on the host computer.',
       });
