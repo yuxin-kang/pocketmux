@@ -264,7 +264,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.windows[0].generalAutofillEnabled, false);
   assert.equal(config.identifier, 'io.github.yuxinkang.pocketmux');
-  assert.equal(config.bundle.android.versionCode, 1024);
+  assert.equal(config.bundle.android.versionCode, 1025);
   assert.match(config.app.security.csp, /frame-src http: https:/);
   assert.deepEqual(capability.permissions, ['core:default']);
   assert.equal('remote' in capability, false);
