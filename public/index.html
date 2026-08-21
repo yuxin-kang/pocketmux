@@ -24,7 +24,7 @@
     <link rel="shortcut icon" href="./favicon.ico?v=20260812-pocket-terminal" type="image/x-icon">
     <link rel="apple-touch-icon" href="./assets/pocketmux-icon-180.png?v=20260812-pocket-terminal" sizes="180x180">
     <link rel="manifest" href="./manifest.webmanifest">
-    <link rel="stylesheet" href="./styles.css?v=20260817-attachment-tmux-fix">
+    <link rel="stylesheet" href="./styles.css?v=20260820-file-transfer-1024">
     <title>pocketmux</title>
   </head>
   <body>
@@ -69,6 +69,11 @@
           </div>
           <div class="topbar-actions">
             <div id="connection-status" class="connection-status" role="status"><span class="status-dot"></span><span>连接中</span></div>
+            <button id="inbox-button" class="inbox-button" type="button" aria-haspopup="dialog" aria-controls="inbox-dialog" aria-label="文件收件箱" data-i18n-aria-label="inbox.openAria">
+              <span class="inbox-icon" aria-hidden="true">⇩</span>
+              <span data-i18n="inbox.button">文件</span>
+              <span id="inbox-count" class="inbox-count is-hidden" aria-hidden="true">0</span>
+            </button>
             <div id="language-switch" class="language-switch" role="group" aria-label="语言选择" data-i18n-aria-label="language.label">
               <button class="language-button" type="button" data-language="zh" aria-pressed="true">中</button>
               <button class="language-button" type="button" data-language="en" aria-pressed="false">EN</button>
@@ -101,6 +106,36 @@
               <button id="close-quick-switch" class="quick-switch-close" type="button" aria-label="关闭选择面板" data-i18n-aria-label="switcher.close">×</button>
             </header>
             <div id="quick-switch-options" class="quick-switch-options" role="listbox" aria-labelledby="quick-switch-heading"></div>
+          </div>
+        </dialog>
+
+        <dialog id="inbox-dialog" class="inbox-dialog" aria-labelledby="inbox-heading">
+          <div class="inbox-sheet">
+            <header class="inbox-heading-row">
+              <div>
+                <div class="section-kicker" data-i18n="inbox.kicker">文件收件箱</div>
+                <h2 id="inbox-heading" data-i18n="inbox.heading">从电脑接收的文件</h2>
+              </div>
+              <button id="close-inbox" class="quick-switch-close" type="button" aria-label="关闭文件收件箱" data-i18n-aria-label="inbox.close">×</button>
+            </header>
+            <div id="inbox-list" class="inbox-list" aria-live="polite"></div>
+          </div>
+        </dialog>
+
+        <dialog id="file-preview-dialog" class="file-preview-dialog" aria-labelledby="file-preview-heading">
+          <div class="file-preview-sheet">
+            <header class="file-preview-heading-row">
+              <div class="file-preview-heading-copy">
+                <div class="section-kicker" data-i18n="inbox.previewKicker">文件预览</div>
+                <h2 id="file-preview-heading">—</h2>
+                <div id="file-preview-meta" class="file-preview-meta">—</div>
+              </div>
+              <button id="close-file-preview" class="quick-switch-close" type="button" aria-label="关闭文件预览" data-i18n-aria-label="inbox.closePreview">×</button>
+            </header>
+            <div id="file-preview-body" class="file-preview-body"></div>
+            <div class="file-preview-actions">
+              <a id="file-preview-download" class="dialog-button primary" href="#" target="_blank" rel="noopener" download data-i18n="inbox.download">下载文件</a>
+            </div>
           </div>
         </dialog>
 
@@ -210,8 +245,8 @@
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </div>
     <noscript>需要启用 JavaScript 才能使用 pocketmux。</noscript>
-    <script src="./i18n.js?v=20260817-attachment-tmux-fix" defer></script>
+    <script src="./i18n.js?v=20260820-file-transfer-1024" defer></script>
     <script src="./app-helpers.js?v=20260809-review-fixes" defer></script>
-    <script src="./app.js?v=20260817-attachment-tmux-fix" defer></script>
+    <script src="./app.js?v=20260820-file-transfer-1024" defer></script>
   </body>
 </html>

@@ -7,6 +7,17 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const { randomBytes } = require('node:crypto');
 const { spawn } = require('node:child_process');
+const {
+  OUTBOX_ROOT_DIRECTORY,
+  OUTBOX_TTL_MS,
+  OUTBOX_ID_PATTERN,
+  acknowledgeOutboxFile,
+  ensureOutboxDirectory,
+  getOutboxFile,
+  listOutboxFiles,
+  pruneOutboxFiles,
+  removeOutboxFile,
+} = require('./outbox');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -1029,6 +1040,51 @@ function sendJson(res, statusCode, payload) {
   res.end(body);
 }
 
+function publicOutboxFile(file) {
+  return {
+    id: file.id,
+    name: file.name,
+    contentType: file.contentType,
+    extension: file.extension,
+    size: file.size,
+    createdAt: file.createdAt,
+    viewedAt: file.viewedAt || null,
+  };
+}
+
+function outboxApiError(error, id = '') {
+  const code = error?.code || '';
+  if (!['inbox_file_not_found', 'unsupported_file_type', 'source_file_missing'].includes(code)) {
+    return error;
+  }
+  const notFound = code === 'inbox_file_not_found';
+  return new ApiError(
+    error.statusCode || (notFound ? 404 : 400),
+    error.message,
+    notFound ? '这个文件已经不存在或已过期。' : error.message,
+    notFound ? 'This file is no longer available or has expired.' : error.message,
+    { code: notFound ? 'inbox_file_not_found' : code },
+  );
+}
+
+function streamOutboxFile(res, file) {
+  const safeName = String(file.name || 'file').replace(/[\r\n"]/g, '_');
+  const disposition = `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(safeName)}`;
+  res.writeHead(200, {
+    'Content-Type': file.contentType,
+    'Content-Length': file.size,
+    'Content-Disposition': disposition,
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    ...POCKETMUX_API_HEADERS,
+  });
+  const stream = fs.createReadStream(file.path);
+  stream.on('error', () => {
+    if (!res.destroyed) res.destroy();
+  });
+  stream.pipe(res);
+}
+
 function sendText(res, statusCode, body, contentType) {
   res.writeHead(statusCode, {
     'Content-Type': contentType,
@@ -1113,6 +1169,8 @@ function createRemoteToolServer({
   uploadReadTimeoutMs = UPLOAD_READ_TIMEOUT_MS,
   maxConcurrentUploadReads = MAX_CONCURRENT_UPLOAD_READS,
   removeUploadDirectory = removeProcessUploadDirectory,
+  outboxDirectory = process.env.POCKETMUX_OUTBOX_DIR || OUTBOX_ROOT_DIRECTORY,
+  outboxTtlMs = OUTBOX_TTL_MS,
 } = {}) {
   if (!token || typeof token !== 'string') {
     throw new Error('A non-empty access token is required.');
@@ -1133,6 +1191,7 @@ function createRemoteToolServer({
   let activeUploadReads = 0;
   let attachmentMutationQueue = Promise.resolve();
   let attachmentCleanupPromise = null;
+  const outboxDirectoryReady = ensureOutboxDirectory(outboxDirectory);
   const pruneAttachments = async () => {
     const expiry = Date.now() - attachmentTtlMs;
     storedAttachmentBytes -= await pruneExpiredAttachments(attachments, expiry);
@@ -1147,9 +1206,16 @@ function createRemoteToolServer({
       .catch((error) => console.error('[pocketmux] attachment cleanup failed', error));
   }, 60 * 60 * 1000);
   attachmentCleanupTimer.unref?.();
+  const outboxCleanupTimer = setInterval(() => {
+    void outboxDirectoryReady
+      .then(() => pruneOutboxFiles(outboxDirectory, { ttlMs: outboxTtlMs }))
+      .catch((error) => console.error('[pocketmux] inbox cleanup failed', error));
+  }, 60 * 60 * 1000);
+  outboxCleanupTimer.unref?.();
 
   const cleanupAttachments = () => {
     clearInterval(attachmentCleanupTimer);
+    clearInterval(outboxCleanupTimer);
     if (attachmentCleanupPromise) return attachmentCleanupPromise;
     const cleanup = queueAttachmentMutation(async () => {
       await uploadDirectoryReady.catch(() => undefined);
@@ -1220,6 +1286,90 @@ function createRemoteToolServer({
       if (req.method === 'GET' && parts.length === 2 && parts[1] === 'sessions') {
         const sessions = await listSessions(tmuxRunner);
         sendJson(res, 200, { sessions, now: new Date().toISOString() });
+        return;
+      }
+
+      if (req.method === 'GET' && parts.length === 2 && parts[1] === 'inbox') {
+        await outboxDirectoryReady;
+        await pruneOutboxFiles(outboxDirectory, { ttlMs: outboxTtlMs });
+        const files = await listOutboxFiles(outboxDirectory);
+        sendJson(res, 200, {
+          files,
+          unreadCount: files.filter((file) => !file.viewedAt).length,
+          now: new Date().toISOString(),
+        });
+        return;
+      }
+
+      if (parts.length === 3 && parts[1] === 'inbox') {
+        const fileId = parts[2];
+        if (!OUTBOX_ID_PATTERN.test(fileId)) {
+          throw new ApiError(
+            404,
+            'Inbox file not found',
+            '这个文件已经不存在或已过期。',
+            'This file is no longer available or has expired.',
+            { code: 'inbox_file_not_found' },
+          );
+        }
+        await outboxDirectoryReady;
+        if (req.method === 'GET') {
+          try {
+            const file = await getOutboxFile(outboxDirectory, fileId);
+            streamOutboxFile(res, file);
+          } catch (error) {
+            throw outboxApiError(error, fileId);
+          }
+          return;
+        }
+      }
+
+      if (parts.length === 4 && parts[1] === 'inbox' && parts[3] === 'ack') {
+        const fileId = parts[2];
+        if (!OUTBOX_ID_PATTERN.test(fileId)) {
+          throw new ApiError(
+            404,
+            'Inbox file not found',
+            '这个文件已经不存在或已过期。',
+            'This file is no longer available or has expired.',
+            { code: 'inbox_file_not_found' },
+          );
+        }
+        await outboxDirectoryReady;
+        if (req.method === 'POST') {
+          try {
+            const file = await acknowledgeOutboxFile(outboxDirectory, fileId);
+            sendJson(res, 200, { ok: true, file: publicOutboxFile(file) });
+          } catch (error) {
+            throw outboxApiError(error, fileId);
+          }
+          return;
+        }
+      }
+
+      if (parts.length === 3 && parts[1] === 'inbox' && req.method === 'DELETE') {
+        const fileId = parts[2];
+        if (!OUTBOX_ID_PATTERN.test(fileId)) {
+          throw new ApiError(
+            404,
+            'Inbox file not found',
+            '这个文件已经不存在或已过期。',
+            'This file is no longer available or has expired.',
+            { code: 'inbox_file_not_found' },
+          );
+        }
+        await outboxDirectoryReady;
+        const removed = await removeOutboxFile(outboxDirectory, fileId);
+        if (!removed) {
+          throw new ApiError(
+            404,
+            'Inbox file not found',
+            '这个文件已经不存在或已过期。',
+            'This file is no longer available or has expired.',
+            { code: 'inbox_file_not_found' },
+          );
+        }
+        sendJson(res, 200, { ok: true });
         return;
       }
 
@@ -1454,6 +1604,8 @@ function createRemoteToolServer({
     cleanup: cleanupAttachments,
     uploadDirectory,
     uploadDirectoryReady,
+    outboxDirectory,
+    outboxDirectoryReady,
   };
 }
 
@@ -1508,6 +1660,8 @@ module.exports = {
   MAX_STORED_ATTACHMENT_BYTES,
   ATTACHMENT_TTL_MS,
   UPLOAD_DIR,
+  OUTBOX_ROOT_DIRECTORY,
+  OUTBOX_TTL_MS,
   PANE_FORMAT,
   SESSION_FORMAT,
   buildAttachmentPrompt,

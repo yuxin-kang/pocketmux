@@ -24,3 +24,6 @@
 # generated JNI name. Keep both names and the external method unchanged.
 -keep class io.crates.keyring.Keyring { *; }
 -keep class io.crates.keyring.Keyring$Companion { *; }
+
+# Keep the method name exposed through Android WebView's JavaScript bridge.
+-keep class io.github.yuxinkang.pocketmux.MainActivity$PocketmuxFileBridge { *; }

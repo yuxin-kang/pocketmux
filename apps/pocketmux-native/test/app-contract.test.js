@@ -87,8 +87,8 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   const capability = JSON.parse(capabilityText);
 
   assert.match(html, /连接后会直接打开原有网页界面/);
-  assert.match(html, /styles\.css\?v=20260813-token-recovery-1022/);
-  assert.match(html, /main\.js\?v=20260813-token-recovery-1022/);
+  assert.match(html, /styles\.css\?v=20260820-file-transfer-1024/);
+  assert.match(html, /main\.js\?v=20260820-file-transfer-1024/);
   assert.match(html, /id="remote-menu-toggle"[^>]+aria-expanded="false"[\s\S]*?<span aria-hidden="true">›<\/span>/);
   assert.match(html, /id="remote-drawer"[^>]+aria-hidden="true"[^>]+inert/);
   assert.match(html, /id="refresh-remote"/);
@@ -201,6 +201,9 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /setLanguage\(event\.data\.language\)/);
   assert.match(main, /REMOTE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required'/);
   assert.match(main, /REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded'/);
+  assert.match(main, /REMOTE_FILE_ACTION_REQUEST_MESSAGE_TYPE = 'pocketmux:file-action-request'/);
+  assert.match(main, /window\.PocketmuxFiles/);
+  assert.match(main, /base64FromBytes\(bytes\)/);
   assert.match(main, /initializeConnections\(\{/);
   assert.match(main, /isCurrent: \(operation\) => connectionOperations\.isCurrent\(operation\)/);
   assert.match(main, /applyCompletedState: async \(\{ hydration, migrated \}\)/);
@@ -210,6 +213,10 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /elements\.accessToken\.addEventListener\('input'/);
   assert.match(browserApp, /NATIVE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required'/);
   assert.match(browserApp, /NATIVE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded'/);
+  assert.match(browserApp, /NATIVE_FILE_ACTION_REQUEST_MESSAGE_TYPE = 'pocketmux:file-action-request'/);
+  assert.match(browserApp, /requestNativeFileAction\(file, blob, 'open'\)/);
+  assert.match(browserApp, /requestNativeFileAction\(file, blob, 'save'\)/);
+  assert.match(browserApp, /inbox\.pdfNativeFallback/);
   assert.match(browserApp, /publishAuthenticationSucceededToNativeShell\(\)/);
   assert.match(browserApp, /requirePocketmuxIdentity: true/);
   assert.match(browserApp, /isPocketmuxHealthPayload\(health\)/);
@@ -257,7 +264,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.windows[0].generalAutofillEnabled, false);
   assert.equal(config.identifier, 'io.github.yuxinkang.pocketmux');
-  assert.equal(config.bundle.android.versionCode, 1023);
+  assert.equal(config.bundle.android.versionCode, 1024);
   assert.match(config.app.security.csp, /frame-src http: https:/);
   assert.deepEqual(capability.permissions, ['core:default']);
   assert.equal('remote' in capability, false);
@@ -361,8 +368,13 @@ test('initializes Android ndk-context before keyring access', async () => {
   assert.doesNotMatch(bridge, /@JvmStatic/);
   assert.match(activity, /io\.crates\.keyring\.Keyring\.initializeNdkContext\(applicationContext\)/);
   assert.match(activity, /initializeNdkContext\(applicationContext\)[\s\S]*?super\.onCreate/);
+  assert.match(activity, /addJavascriptInterface\(pocketmuxFileBridge, "PocketmuxFiles"\)/);
+  assert.match(activity, /fun saveFile\(/);
+  assert.match(activity, /MediaStore\.Downloads\.EXTERNAL_CONTENT_URI/);
+  assert.match(activity, /Intent\.ACTION_VIEW/);
   assert.match(proguard, /-keep class io\.crates\.keyring\.Keyring \{ \*; \}/);
   assert.match(proguard, /-keep class io\.crates\.keyring\.Keyring\$Companion \{ \*; \}/);
+  assert.match(proguard, /MainActivity\$PocketmuxFileBridge \{ \*; \}/);
 });
 
 test('diagnoses credential persistence without logging access tokens', async () => {

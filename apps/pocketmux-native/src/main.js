@@ -65,6 +65,14 @@ const CREDENTIAL_DRAIN_TIMEOUT_MS = 10000;
 const REMOTE_LANGUAGE_MESSAGE_TYPE = 'pocketmux:language';
 const REMOTE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required';
 const REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded';
+const REMOTE_FILE_ACTION_REQUEST_MESSAGE_TYPE = 'pocketmux:file-action-request';
+const REMOTE_FILE_ACTION_RESULT_MESSAGE_TYPE = 'pocketmux:file-action-result';
+const NATIVE_FILE_ACTION_MAX_BYTES = 50 * 1024 * 1024;
+const NATIVE_FILE_ACTION_TYPES = new Set([
+  'application/pdf',
+  'text/markdown',
+  'text/plain',
+]);
 const NATIVE_VIEWPORT_EVENT_TYPE = 'pocketmux:native-viewport';
 const connectionPolicy = {
   allowPrivateHttp: !/\bAndroid\b/i.test(window.navigator.userAgent),
@@ -697,8 +705,84 @@ function connectionAttemptForMessage(event) {
   return null;
 }
 
+function nativeFileName(value) {
+  const name = String(value || 'pocketmux-file')
+    .replace(/[\\/\u0000-\u001f\u007f]/g, '_')
+    .trim()
+    .slice(0, 180);
+  return name || 'pocketmux-file';
+}
+
+function base64FromBytes(bytes) {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function postNativeFileActionResult(event, requestId, result) {
+  if (!event.source || typeof event.source.postMessage !== 'function') return;
+  event.source.postMessage({
+    type: REMOTE_FILE_ACTION_RESULT_MESSAGE_TYPE,
+    requestId,
+    ...result,
+  }, event.origin);
+}
+
+function handleRemoteFileAction(event, attempt) {
+  const requestId = String(event.data?.requestId || '');
+  if (!requestId || !attempt || !connectionValidations.isCurrent(attempt.validationAttempt)) return;
+  if (!attempt.authentication.webAuthenticated) {
+    postNativeFileActionResult(event, requestId, { ok: false, code: 'native-file-not-authenticated' });
+    return;
+  }
+  const action = event.data.action === 'open' ? 'open' : 'save';
+  const contentType = String(event.data.contentType || '').toLowerCase();
+  const rawBytes = event.data.bytes;
+  const bytes = rawBytes instanceof ArrayBuffer
+    ? new Uint8Array(rawBytes)
+    : (ArrayBuffer.isView(rawBytes) ? new Uint8Array(rawBytes.buffer, rawBytes.byteOffset, rawBytes.byteLength) : null);
+  if (!bytes || bytes.byteLength === 0 || bytes.byteLength > NATIVE_FILE_ACTION_MAX_BYTES) {
+    postNativeFileActionResult(event, requestId, { ok: false, code: 'invalid-file-data' });
+    return;
+  }
+  if (!NATIVE_FILE_ACTION_TYPES.has(contentType)) {
+    postNativeFileActionResult(event, requestId, { ok: false, code: 'unsupported-file-type' });
+    return;
+  }
+  const bridge = window.PocketmuxFiles;
+  if (!bridge || typeof bridge.saveFile !== 'function' || !shellSessionToken) {
+    postNativeFileActionResult(event, requestId, { ok: false, code: 'native-file-bridge-unavailable' });
+    return;
+  }
+  try {
+    const rawResult = bridge.saveFile(
+      shellSessionToken,
+      base64FromBytes(bytes),
+      nativeFileName(event.data.name),
+      contentType,
+      action === 'open',
+    );
+    let result = {};
+    try { result = JSON.parse(rawResult); } catch { /* no-op */ }
+    postNativeFileActionResult(event, requestId, {
+      ok: result.ok === true,
+      code: result.code || (result.ok === true ? 'saved' : 'native-file-save-failed'),
+    });
+  } catch (error) {
+    authDebug('native-file-action-failed', { error: String(error) });
+    postNativeFileActionResult(event, requestId, { ok: false, code: 'native-file-save-failed' });
+  }
+}
+
 function receiveRemoteLanguage(event) {
   const attempt = connectionAttemptForMessage(event);
+  if (event.data?.type === REMOTE_FILE_ACTION_REQUEST_MESSAGE_TYPE) {
+    handleRemoteFileAction(event, attempt);
+    return;
+  }
   if (event.data?.type === REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE) {
     if (!attempt || !connectionValidations.isCurrent(attempt.validationAttempt)) return;
     if (attempt.authentication.webAuthenticated && attempt.persistenceState !== 'failed') return;

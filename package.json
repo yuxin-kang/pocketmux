@@ -4,12 +4,16 @@
   "private": true,
   "description": "A phone-friendly, token-protected tmux and Codex console.",
   "type": "commonjs",
+  "bin": {
+    "pocketmux-send-file": "bin/pocketmux-send-file.js"
+  },
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "send-file": "node bin/pocketmux-send-file.js",
     "test": "node --test"
   }
 }

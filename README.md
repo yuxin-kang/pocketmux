@@ -19,6 +19,7 @@ Unlike a general-purpose browser terminal, Pocketmux is designed for quickly che
 - Follow live terminal output automatically, with manual scrollback when needed.
 - Continue terminal-based agent sessions with text, images, PDFs, documents, spreadsheets, and other common files.
 - Send multiple mixed attachments with one prompt while preserving their original filenames.
+- Send a PDF or Markdown file from Codex on the host directly to the phone's Pocketmux inbox.
 - Create named zsh windows in `~`, rename panes, and delete standalone tmux windows.
 - Preview and accept zsh autosuggestions only when the selected pane is an interactive zsh shell.
 - Use common terminal controls such as `Ctrl-C`, `Esc`, arrow keys, and `Enter`.
@@ -152,6 +153,17 @@ Supported formats include:
 
 Uploads are also removed when the Pocketmux process stops.
 
+### Send a file from Codex to the phone
+
+When Codex is running on the same computer and system user as Pocketmux, ask it to run:
+
+```bash
+npm run send-file -- /absolute/path/to/report.pdf
+npm run send-file -- /absolute/path/to/notes.md
+```
+
+The command stages the file in Pocketmux's owner-only inbox. The phone app polls the inbox and shows a badge for new files. Markdown opens in the app; Android sends PDFs to the system PDF viewer and saves them in `Downloads/Pocketmux` at the same time, so devices without PDF support do not get a blank WebView. Files remain available across Pocketmux restarts for up to seven days, or until you delete them from the inbox. Browser use keeps the WebView/download fallback.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -159,6 +171,7 @@ Uploads are also removed when the Pocketmux process stops.
 | `HOST` | `0.0.0.0` | Network interface on which the HTTP server listens |
 | `PORT` | `3789` | HTTP server port |
 | `REMOTE_TOOL_TOKEN` | Random token at startup | Persistent bearer token used to authorize browser requests |
+| `POCKETMUX_OUTBOX_DIR` | `~/.local/share/pocketmux/outbox` | Persistent host directory used by `pocketmux-send-file` |
 
 Example:
 
@@ -176,6 +189,7 @@ npm start
 - Text is transferred through a temporary tmux buffer rather than interpolated into a server-side shell command.
 - The server does not expose a general process-spawning or shell-execution HTTP endpoint. Text sent to an interactive shell can still execute with the Pocketmux user's privileges.
 - Attachments require authentication, are stored with owner-only permissions, and are never exposed as public static files.
+- Host-to-phone files are staged through an owner-only outbox directory; the phone can only list or download them through the authenticated API and never receives an arbitrary host path.
 - Terminal output is read from tmux on demand and is not persisted by Pocketmux.
 
 Pocketmux serves plain HTTP by default and is designed for a trusted single-user environment. Do not expose port `3789` directly to the public internet; provide HTTPS or private-network encryption through the surrounding proxy or tunnel.
@@ -183,6 +197,7 @@ Pocketmux serves plain HTTP by default and is designed for a trusted single-user
 ## How It Works
 
 ```text
+Codex  →  Pocketmux outbox  →  Pocketmux HTTP API  →  phone inbox
 Browser  →  Pocketmux HTTP API  →  tmux  →  shells, tools, and terminal agents
 ```
 

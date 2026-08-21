@@ -37,6 +37,12 @@
     deletingWindow: false,
     zshSuggestion: null,
     selectedAttachments: [],
+    inboxFiles: [],
+    inboxInitialized: false,
+    inboxPromise: null,
+    previewObjectUrl: '',
+    previewBlob: null,
+    previewFileId: '',
     quickSwitchKind: '',
     connectionKey: 'connection.connecting',
     connectionKind: 'loading',
@@ -51,6 +57,10 @@
   const NATIVE_LANGUAGE_MESSAGE_TYPE = 'pocketmux:language';
   const NATIVE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required';
   const NATIVE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded';
+  const NATIVE_FILE_ACTION_REQUEST_MESSAGE_TYPE = 'pocketmux:file-action-request';
+  const NATIVE_FILE_ACTION_RESULT_MESSAGE_TYPE = 'pocketmux:file-action-result';
+  const nativeFileActionRequests = new Map();
+  let nativeFileActionSequence = 0;
   const MESSAGE_INPUT_VIEWPORT_MARGIN = 12;
   const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
   const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -121,6 +131,17 @@
     sendButton: document.querySelector('#send-button'),
     zshCompleteButton: document.querySelector('#zsh-complete-button'),
     connectionStatus: document.querySelector('#connection-status'),
+    inboxButton: document.querySelector('#inbox-button'),
+    inboxCount: document.querySelector('#inbox-count'),
+    inboxDialog: document.querySelector('#inbox-dialog'),
+    inboxList: document.querySelector('#inbox-list'),
+    closeInbox: document.querySelector('#close-inbox'),
+    filePreviewDialog: document.querySelector('#file-preview-dialog'),
+    filePreviewHeading: document.querySelector('#file-preview-heading'),
+    filePreviewMeta: document.querySelector('#file-preview-meta'),
+    filePreviewBody: document.querySelector('#file-preview-body'),
+    filePreviewDownload: document.querySelector('#file-preview-download'),
+    closeFilePreview: document.querySelector('#close-file-preview'),
     refreshButton: document.querySelector('#refresh-button'),
     logoutButton: document.querySelector('#logout-button'),
     quickSessionButton: document.querySelector('#quick-session-button'),
@@ -220,6 +241,48 @@
     }, '*');
   }
 
+  function receiveNativeFileActionResult(event) {
+    if (!nativeBootstrap || window.parent === window || event.source !== window.parent) return;
+    if (event.data?.type !== NATIVE_FILE_ACTION_RESULT_MESSAGE_TYPE) return;
+    const pending = nativeFileActionRequests.get(event.data.requestId);
+    if (!pending) return;
+    nativeFileActionRequests.delete(event.data.requestId);
+    pending.resolve(event.data);
+  }
+
+  function requestNativeFileAction(file, blob, action) {
+    if (!nativeBootstrap || window.parent === window || !(blob instanceof Blob)) {
+      return Promise.resolve({ ok: false, unavailable: true });
+    }
+    const requestId = `file-${Date.now().toString(36)}-${(++nativeFileActionSequence).toString(36)}`;
+    return new Promise((resolve) => {
+      const timeout = window.setTimeout(() => {
+        nativeFileActionRequests.delete(requestId);
+        resolve({ ok: false, unavailable: true });
+      }, 1800);
+      nativeFileActionRequests.set(requestId, {
+        resolve: (result) => {
+          window.clearTimeout(timeout);
+          resolve(result);
+        },
+      });
+      void blob.arrayBuffer().then((bytes) => {
+        window.parent.postMessage({
+          type: NATIVE_FILE_ACTION_REQUEST_MESSAGE_TYPE,
+          requestId,
+          action,
+          name: file.name,
+          contentType: file.contentType,
+          bytes,
+        }, '*', [bytes]);
+      }).catch(() => {
+        window.clearTimeout(timeout);
+        nativeFileActionRequests.delete(requestId);
+        resolve({ ok: false, unavailable: true });
+      });
+    });
+  }
+
   function setLanguage(language) {
     const nextLanguage = normalizeLanguage(language);
     if (nextLanguage === state.language) return;
@@ -263,6 +326,263 @@
   function showErrorToast(error) {
     if (error.localizedMessages) activateToast({ messages: error.localizedMessages }, 'error');
     else showToast(error.message, 'error');
+  }
+
+  function formatFileSize(bytes) {
+    const size = Number(bytes) || 0;
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+    if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+    return `${(size / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  }
+
+  function formatInboxTime(value) {
+    const timestamp = Date.parse(value) || Number(value) || 0;
+    if (!timestamp) return '—';
+    return new Date(timestamp).toLocaleString(state.language === 'en' ? 'en' : 'zh-CN', {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  function inboxFileType(file) {
+    return String(file.extension || file.contentType || 'file').toUpperCase();
+  }
+
+  function renderInboxButton() {
+    if (!elements.inboxButton || !elements.inboxCount) return;
+    const unreadCount = state.inboxFiles.filter((file) => !file.viewedAt).length;
+    elements.inboxCount.textContent = String(unreadCount);
+    elements.inboxCount.classList.toggle('is-hidden', unreadCount === 0);
+    elements.inboxButton.disabled = !state.token;
+  }
+
+  function renderInboxList() {
+    if (!elements.inboxList) return;
+    elements.inboxList.replaceChildren();
+    if (state.inboxFiles.length === 0) {
+      const empty = makeElement('div', 'inbox-empty');
+      empty.append(
+        makeElement('strong', '', t('inbox.emptyTitle')),
+        makeElement('span', '', t('inbox.emptyDetail')),
+      );
+      elements.inboxList.append(empty);
+      return;
+    }
+
+    for (const file of state.inboxFiles) {
+      const row = makeElement('div', `inbox-item${file.viewedAt ? '' : ' unread'}`);
+      const icon = makeElement('span', 'inbox-file-icon', inboxFileType(file));
+      icon.setAttribute('aria-hidden', 'true');
+      const copy = makeElement('div', 'inbox-item-copy');
+      copy.append(
+        makeElement('strong', 'inbox-item-name', file.name),
+        makeElement('span', 'inbox-item-meta', t('inbox.fileMeta', {
+          type: inboxFileType(file),
+          size: formatFileSize(file.size),
+          time: formatInboxTime(file.createdAt),
+        })),
+      );
+      const viewButton = makeElement('button', 'inbox-item-action', t('inbox.open'));
+      viewButton.type = 'button';
+      viewButton.addEventListener('click', () => { void openInboxFile(file.id); });
+      const deleteButton = makeElement('button', 'inbox-item-action', t('inbox.delete'));
+      deleteButton.type = 'button';
+      deleteButton.addEventListener('click', () => { void deleteInboxFile(file.id); });
+      row.append(icon, copy);
+      if (!file.viewedAt) row.append(makeElement('span', 'inbox-unread-dot'));
+      row.append(viewButton, deleteButton);
+      elements.inboxList.append(row);
+    }
+  }
+
+  function showDialog(dialog) {
+    if (!dialog) return;
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else dialog.setAttribute('open', '');
+  }
+
+  function closeDialog(dialog) {
+    if (!dialog) return;
+    if (typeof dialog.close === 'function' && dialog.open) dialog.close();
+    else dialog.removeAttribute('open');
+  }
+
+  function openInbox() {
+    renderInboxList();
+    showDialog(elements.inboxDialog);
+    void refreshInbox({ quiet: true });
+  }
+
+  async function fetchInboxFile(fileId) {
+    const response = await fetch(resolveAppUrl(`/api/inbox/${encodeURIComponent(fileId)}`, window.location.href), {
+      headers: { Authorization: `Bearer ${state.token}` },
+    });
+    if (response.status === 401 && isPocketmuxApiResponse(response)) {
+      let payload = {};
+      try { payload = await response.json(); } catch { /* no-op */ }
+      const error = responseError(payload, response.status, 'error.invalidToken');
+      error.unauthorized = true;
+      throw error;
+    }
+    if (!response.ok) {
+      let payload = {};
+      try { payload = await response.json(); } catch { /* no-op */ }
+      throw responseError(payload, response.status, 'error.requestFailed');
+    }
+    return response.blob();
+  }
+
+  async function acknowledgeInboxFile(file) {
+    try {
+      await api(`/api/inbox/${encodeURIComponent(file.id)}/ack`, { method: 'POST' });
+      file.viewedAt = new Date().toISOString();
+    } catch (error) {
+      if (error.unauthorized) throw error;
+    }
+  }
+
+  async function downloadInboxFile(fileId) {
+    const file = state.inboxFiles.find((candidate) => candidate.id === fileId);
+    if (!file) return;
+    try {
+      const blob = state.previewFileId === fileId && state.previewBlob
+        ? state.previewBlob
+        : await fetchInboxFile(fileId);
+      if (nativeBootstrap) {
+        const nativeResult = await requestNativeFileAction(file, blob, 'save');
+        if (nativeResult.ok) {
+          await acknowledgeInboxFile(file);
+          renderInboxButton();
+          renderInboxList();
+          showTranslatedToast('inbox.saved', 'success', { name: file.name });
+          return;
+        }
+      }
+      const url = state.previewFileId === fileId && state.previewObjectUrl
+        ? state.previewObjectUrl
+        : URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = file.name;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.click();
+      if (url !== state.previewObjectUrl) window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (error) {
+      if (error.unauthorized) forgetToken();
+      else showErrorToast(error);
+    }
+  }
+
+  async function openInboxFile(fileId) {
+    const file = state.inboxFiles.find((candidate) => candidate.id === fileId);
+    if (!file) return;
+    try {
+      const blob = await fetchInboxFile(fileId);
+      if (state.previewObjectUrl) URL.revokeObjectURL(state.previewObjectUrl);
+      state.previewObjectUrl = URL.createObjectURL(blob);
+      state.previewBlob = blob;
+      state.previewFileId = fileId;
+      elements.filePreviewHeading.textContent = file.name;
+      elements.filePreviewMeta.textContent = t('inbox.fileMeta', {
+        type: inboxFileType(file),
+        size: formatFileSize(file.size),
+        time: formatInboxTime(file.createdAt),
+      });
+      elements.filePreviewDownload.href = state.previewObjectUrl;
+      elements.filePreviewDownload.download = file.name;
+      elements.filePreviewBody.replaceChildren();
+      if (file.contentType === 'text/markdown' || file.contentType === 'text/plain') {
+        const text = await blob.text();
+        elements.filePreviewBody.append(makeElement('pre', 'file-preview-text', text));
+      } else {
+        const nativeResult = await requestNativeFileAction(file, blob, 'open');
+        if (nativeResult.ok) {
+          await acknowledgeInboxFile(file);
+          renderInboxButton();
+          renderInboxList();
+          showTranslatedToast('inbox.opened', 'success', { name: file.name });
+          closeFilePreviewDialog();
+          return;
+        }
+        if (nativeBootstrap) {
+          elements.filePreviewBody.append(
+            makeElement('p', 'file-preview-fallback', t('inbox.pdfNativeFallback')),
+          );
+        } else {
+          const frame = makeElement('iframe', 'file-preview-frame');
+          frame.src = state.previewObjectUrl;
+          frame.title = file.name;
+          elements.filePreviewBody.append(
+            frame,
+            makeElement('p', 'file-preview-fallback', t('inbox.pdfFallback')),
+          );
+        }
+      }
+      await acknowledgeInboxFile(file);
+      renderInboxButton();
+      renderInboxList();
+      showDialog(elements.filePreviewDialog);
+    } catch (error) {
+      if (error.unauthorized) forgetToken();
+      else showErrorToast(error);
+    }
+  }
+
+  async function deleteInboxFile(fileId) {
+    const file = state.inboxFiles.find((candidate) => candidate.id === fileId);
+    if (!file) return;
+    if (typeof window.confirm === 'function' && !window.confirm(t('inbox.deleteConfirm', { name: file.name }))) return;
+    try {
+      await api(`/api/inbox/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
+      state.inboxFiles = state.inboxFiles.filter((candidate) => candidate.id !== fileId);
+      renderInboxButton();
+      renderInboxList();
+      if (elements.filePreviewHeading.textContent === file.name) closeDialog(elements.filePreviewDialog);
+    } catch (error) {
+      if (error.unauthorized) forgetToken();
+      else showErrorToast(error);
+    }
+  }
+
+  function closeFilePreviewDialog() {
+    closeDialog(elements.filePreviewDialog);
+    elements.filePreviewBody.replaceChildren();
+    elements.filePreviewDownload.removeAttribute('href');
+    if (state.previewObjectUrl) URL.revokeObjectURL(state.previewObjectUrl);
+    state.previewObjectUrl = '';
+    state.previewBlob = null;
+    state.previewFileId = '';
+  }
+
+  async function refreshInbox({ quiet = false } = {}) {
+    if (state.inboxPromise) return state.inboxPromise;
+    const previousIds = new Set(state.inboxFiles.map((file) => file.id));
+    const promise = (async () => {
+      try {
+        const payload = await api('/api/inbox');
+        state.inboxFiles = Array.isArray(payload.files) ? payload.files : [];
+        const newFiles = state.inboxFiles.filter((file) => !previousIds.has(file.id));
+        if (state.inboxInitialized && newFiles.length > 0) {
+          showTranslatedToast('inbox.newFile', 'success', { name: newFiles[0].name });
+        }
+        state.inboxInitialized = true;
+        renderInboxButton();
+        renderInboxList();
+      } catch (error) {
+        if (error.unauthorized) forgetToken();
+        else if (!quiet) showErrorToast(error);
+      }
+    })();
+    state.inboxPromise = promise;
+    try {
+      return await promise;
+    } finally {
+      if (state.inboxPromise === promise) state.inboxPromise = null;
+    }
   }
 
   function responseError(payload, status, fallbackKey) {
@@ -314,8 +634,12 @@
 
   function forgetToken() {
     clearSelectedAttachments();
+    closeFilePreviewDialog();
+    closeDialog(elements.inboxDialog);
     state.token = '';
     state.sessions = [];
+    state.inboxFiles = [];
+    state.inboxInitialized = false;
     state.selectedSession = '';
     state.selectedPane = '';
     state.authErrorKey = '';
@@ -990,6 +1314,8 @@
     renderQuickSwitcher();
     renderTerminalMeta();
     elements.terminalOutput.textContent = state.output;
+    renderInboxButton();
+    renderInboxList();
   }
 
   async function refreshSessions({ quiet = false } = {}) {
@@ -1016,6 +1342,7 @@
         }
         renderAll();
         setConnection('connection.online', 'online');
+        void refreshInbox({ quiet: true });
         if (state.selectedPane && (!quiet || selectionChanged)) {
           await loadOutput({ quiet: true, forceScrollBottom: selectionChanged });
         }
@@ -1469,6 +1796,7 @@
       // request cannot prevent the token from being persisted.
       if (state.token === unlockToken) publishAuthenticationSucceededToNativeShell();
       showShell();
+      void refreshInbox({ quiet: true });
       await refreshSessions();
     } catch (error) {
       state.token = '';
@@ -1487,6 +1815,19 @@
     unlock(elements.tokenInput.value);
   });
   elements.refreshButton.addEventListener('click', () => refreshSessions());
+  elements.inboxButton?.addEventListener('click', openInbox);
+  elements.closeInbox?.addEventListener('click', () => closeDialog(elements.inboxDialog));
+  elements.closeFilePreview?.addEventListener('click', closeFilePreviewDialog);
+  elements.filePreviewDownload?.addEventListener('click', (event) => {
+    if (!nativeBootstrap || !state.previewFileId) return;
+    event.preventDefault();
+    void downloadInboxFile(state.previewFileId);
+  });
+  elements.filePreviewDialog?.addEventListener('close', () => {
+    closeFilePreviewDialog();
+    elements.filePreviewBody?.replaceChildren();
+    elements.filePreviewDownload?.removeAttribute('href');
+  });
   elements.logoutButton.addEventListener('click', forgetToken);
   elements.quickSessionButton.addEventListener('click', () => openQuickSwitcher('session'));
   elements.quickPaneButton.addEventListener('click', () => openQuickSwitcher('pane'));
@@ -1534,6 +1875,7 @@
   elements.languageButtons.forEach((button) => {
     button.addEventListener('click', () => setLanguage(button.dataset.language));
   });
+  window.addEventListener('message', receiveNativeFileActionResult);
 
   applyLanguage();
   if (queryToken) {
@@ -1548,6 +1890,9 @@
 
   setInterval(() => {
     if (!elements.appShell.classList.contains('is-hidden')) refreshSessions({ quiet: true });
+  }, 5000);
+  setInterval(() => {
+    if (!elements.appShell.classList.contains('is-hidden')) refreshInbox({ quiet: true });
   }, 5000);
   setInterval(() => {
     if (!elements.appShell.classList.contains('is-hidden')) loadOutput({ quiet: true });
