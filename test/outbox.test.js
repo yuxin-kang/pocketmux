@@ -37,6 +37,26 @@ test('stages a Markdown file durably and records acknowledgement state', async (
   assert.ok((await listOutboxFiles(directory))[0].viewedAt);
 });
 
+test('stages common photo and video files with media metadata', async (t) => {
+  const directory = await fsp.mkdtemp(path.join(os.tmpdir(), 'pocketmux-media-outbox-'));
+  t.after(() => fsp.rm(directory, { recursive: true, force: true }));
+  const photoPath = path.join(directory, 'camera-photo.jpg');
+  const videoPath = path.join(directory, 'screen-recording.mp4');
+  await fsp.writeFile(photoPath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+  await fsp.writeFile(videoPath, Buffer.from('fake mp4 payload'));
+
+  const photo = await stageOutboxFile(directory, photoPath);
+  const video = await stageOutboxFile(directory, videoPath);
+  assert.equal(photo.extension, 'jpg');
+  assert.equal(photo.contentType, 'image/jpeg');
+  assert.equal(video.extension, 'mp4');
+  assert.equal(video.contentType, 'video/mp4');
+  assert.deepEqual(
+    (await listOutboxFiles(directory)).map((file) => file.contentType).sort(),
+    ['image/jpeg', 'video/mp4'],
+  );
+});
+
 test('serves the authenticated file inbox and supports download, acknowledgement, and delete', async (t) => {
   const directory = await fsp.mkdtemp(path.join(os.tmpdir(), 'pocketmux-inbox-api-'));
   t.after(() => fsp.rm(directory, { recursive: true, force: true }));

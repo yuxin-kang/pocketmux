@@ -10,7 +10,7 @@ const outboxDirectory = process.env.POCKETMUX_OUTBOX_DIR || OUTBOX_ROOT_DIRECTOR
 
 function usage() {
   console.error('Usage: pocketmux-send-file <file> [--name <display-name>]');
-  console.error('Supported files: PDF, Markdown, TXT, and LOG.');
+  console.error('Supported files: PDF, common images, videos, Markdown, TXT, and LOG.');
 }
 
 async function main(argv = process.argv.slice(2)) {

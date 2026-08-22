@@ -280,6 +280,8 @@ h1 { font-size: 28px; letter-spacing: -0.04em; }
 .file-preview-body { min-height: 180px; max-height: 62dvh; overflow: auto; padding: 16px; background: #0b0c0f; }
 .file-preview-text { margin: 0; color: #d5d2ca; font-family: var(--mono); font-size: 11px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .file-preview-frame { display: block; width: 100%; height: min(58dvh, 620px); border: 0; background: #fff; }
+.file-preview-image { display: block; width: auto; max-width: 100%; height: auto; max-height: min(58dvh, 620px); margin: 0 auto; object-fit: contain; }
+.file-preview-video { display: block; width: 100%; max-width: 100%; max-height: min(58dvh, 620px); margin: 0 auto; background: #000; }
 .file-preview-fallback { display: grid; gap: 8px; min-height: 160px; place-items: center; color: var(--muted); font-size: 12px; text-align: center; }
 .file-preview-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px 16px; border-top: 1px solid var(--line); }
 .file-preview-actions .dialog-button { display: inline-flex; align-items: center; text-decoration: none; }

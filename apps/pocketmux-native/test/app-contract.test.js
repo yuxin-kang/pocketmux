@@ -73,7 +73,7 @@ function readRgbaPngAlphaBounds(buffer) {
 }
 
 test('keeps a local native shell around the unmodified remote Pocketmux interface', async () => {
-  const [html, main, validatedCredential, browserApp, browserHtml, rust, configText, capabilityText] = await Promise.all([
+  const [html, main, validatedCredential, browserApp, browserHtml, rust, configText, capabilityText, fileBridge] = await Promise.all([
     readFile(path.join(root, 'src', 'index.html'), 'utf8'),
     readFile(path.join(root, 'src', 'main.js'), 'utf8'),
     readFile(path.join(root, 'src', 'validated-credential.js'), 'utf8'),
@@ -82,13 +82,14 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
     readFile(path.join(root, 'src-tauri', 'src', 'lib.rs'), 'utf8'),
     readFile(path.join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'),
     readFile(path.join(root, 'src-tauri', 'capabilities', 'default.json'), 'utf8'),
+    readFile(path.join(root, 'src-tauri', 'gen', 'android', 'app', 'src', 'main', 'java', 'io', 'github', 'yuxinkang', 'pocketmux', 'MainActivity.kt'), 'utf8'),
   ]);
   const config = JSON.parse(configText);
   const capability = JSON.parse(capabilityText);
 
   assert.match(html, /连接后会直接打开原有网页界面/);
-  assert.match(html, /styles\.css\?v=20260820-file-transfer-1024/);
-  assert.match(html, /main\.js\?v=20260820-file-transfer-1024/);
+  assert.match(html, /styles\.css\?v=20260821-media-inbox-1026/);
+  assert.match(html, /main\.js\?v=20260821-media-inbox-1026/);
   assert.match(html, /id="remote-menu-toggle"[^>]+aria-expanded="false"[\s\S]*?<span aria-hidden="true">›<\/span>/);
   assert.match(html, /id="remote-drawer"[^>]+aria-hidden="true"[^>]+inert/);
   assert.match(html, /id="refresh-remote"/);
@@ -217,6 +218,14 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(browserApp, /requestNativeFileAction\(file, blob, 'open'\)/);
   assert.match(browserApp, /requestNativeFileAction\(file, blob, 'save'\)/);
   assert.match(browserApp, /inbox\.pdfNativeFallback/);
+  assert.match(browserApp, /INBOX_IMAGE_CONTENT_TYPES/);
+  assert.match(browserApp, /INBOX_VIDEO_CONTENT_TYPES/);
+  assert.match(browserApp, /file-preview-image/);
+  assert.match(browserApp, /file-preview-video/);
+  assert.match(main, /'image\/jpeg'/);
+  assert.match(main, /'video\/mp4'/);
+  assert.match(fileBridge, /"image\/jpeg" -> "image\/jpeg"/);
+  assert.match(fileBridge, /"video\/mp4" -> "video\/mp4"/);
   assert.match(browserApp, /publishAuthenticationSucceededToNativeShell\(\)/);
   assert.match(browserApp, /requirePocketmuxIdentity: true/);
   assert.match(browserApp, /isPocketmuxHealthPayload\(health\)/);

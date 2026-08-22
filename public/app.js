@@ -67,6 +67,14 @@
   const MAX_ATTACHMENTS_PER_MESSAGE = 10;
   const MAX_COMBINED_ATTACHMENT_BYTES = 50 * 1024 * 1024;
   const IMAGE_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+  const INBOX_IMAGE_CONTENT_TYPES = new Set([
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/heic',
+    'image/heif', 'image/bmp', 'image/tiff',
+  ]);
+  const INBOX_VIDEO_CONTENT_TYPES = new Set([
+    'video/mp4', 'video/x-m4v', 'video/quicktime', 'video/webm', 'video/x-matroska',
+    'video/x-msvideo', 'video/3gpp', 'video/mpeg', 'video/x-ms-wmv', 'video/ogg',
+  ]);
   const ATTACHMENT_CONTENT_TYPES = new Set([
     ...IMAGE_CONTENT_TYPES,
     'application/pdf',
@@ -495,9 +503,24 @@
       elements.filePreviewDownload.href = state.previewObjectUrl;
       elements.filePreviewDownload.download = file.name;
       elements.filePreviewBody.replaceChildren();
-      if (file.contentType === 'text/markdown' || file.contentType === 'text/plain') {
+      const contentType = String(file.contentType || '').toLowerCase();
+      if (contentType === 'text/markdown' || contentType === 'text/plain') {
         const text = await blob.text();
         elements.filePreviewBody.append(makeElement('pre', 'file-preview-text', text));
+      } else if (INBOX_IMAGE_CONTENT_TYPES.has(contentType)) {
+        const image = makeElement('img', 'file-preview-image');
+        image.src = state.previewObjectUrl;
+        image.alt = file.name;
+        image.loading = 'eager';
+        elements.filePreviewBody.append(image);
+      } else if (INBOX_VIDEO_CONTENT_TYPES.has(contentType)) {
+        const video = makeElement('video', 'file-preview-video');
+        video.src = state.previewObjectUrl;
+        video.controls = true;
+        video.playsInline = true;
+        video.preload = 'metadata';
+        video.setAttribute('aria-label', file.name);
+        elements.filePreviewBody.append(video);
       } else {
         const nativeResult = await requestNativeFileAction(file, blob, 'open');
         if (nativeResult.ok) {

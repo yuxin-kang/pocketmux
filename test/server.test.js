@@ -69,9 +69,9 @@ test('mobile composer keeps long input visible above the soft keyboard', async (
   assert.match(app, /shouldAutoScrollTerminal\(\{/);
   assert.match(styles, /body\.message-input-active \.app-shell \{ padding-bottom: var\(--keyboard-inset\); \}/);
   assert.match(styles, /\.composer-form textarea \{[^}]*overflow-y: auto;/);
-  assert.match(html, /i18n\.js\?v=20260820-file-transfer-1024/);
+  assert.match(html, /i18n\.js\?v=20260821-media-inbox-1026/);
   assert.match(html, /app-helpers\.js\?v=20260809-review-fixes/);
-  assert.match(html, /app\.js\?v=20260820-file-transfer-1024/);
+  assert.match(html, /app\.js\?v=20260821-media-inbox-1026/);
   assert.match(html, /window\.location\.replace\(`\$\{window\.location\.pathname\}\/\$\{window\.location\.search\}\$\{window\.location\.hash\}`\)/);
   assert.match(i18n, /PocketmuxI18n/);
   assert.equal((html.match(/\.\/favicon\.ico\?v=20260812-pocket-terminal/g) || []).length, 2);
@@ -110,7 +110,7 @@ test('provides a persistent and accessible Chinese-English language switch', asy
   assert.match(styles, /\.icon-button \{ width: 35px; height: 35px;/);
   assert.match(styles, /\.language-switch \{[^}]*height: 35px;/);
   assert.match(styles, /\.language-button \{[^}]*min-width: 29px;[^}]*height: 31px;/);
-  assert.match(html, /styles\.css\?v=20260820-file-transfer-1024/);
+  assert.match(html, /styles\.css\?v=20260821-media-inbox-1026/);
 });
 
 test('serves the browser helper loaded by the main app', async (t) => {

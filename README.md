@@ -19,7 +19,7 @@ Unlike a general-purpose browser terminal, Pocketmux is designed for quickly che
 - Follow live terminal output automatically, with manual scrollback when needed.
 - Continue terminal-based agent sessions with text, images, PDFs, documents, spreadsheets, and other common files.
 - Send multiple mixed attachments with one prompt while preserving their original filenames.
-- Send a PDF or Markdown file from Codex on the host directly to the phone's Pocketmux inbox.
+- Send PDFs, photos, and videos from Codex on the host directly to the phone's Pocketmux inbox.
 - Create named zsh windows in `~`, rename panes, and delete standalone tmux windows.
 - Preview and accept zsh autosuggestions only when the selected pane is an interactive zsh shell.
 - Use common terminal controls such as `Ctrl-C`, `Esc`, arrow keys, and `Enter`.
@@ -160,9 +160,13 @@ When Codex is running on the same computer and system user as Pocketmux, ask it 
 ```bash
 npm run send-file -- /absolute/path/to/report.pdf
 npm run send-file -- /absolute/path/to/notes.md
+npm run send-file -- /absolute/path/to/photo.jpg
+npm run send-file -- /absolute/path/to/recording.mp4
 ```
 
 The command stages the file in Pocketmux's owner-only inbox. The phone app polls the inbox and shows a badge for new files. Markdown opens in the app; Android sends PDFs to the system PDF viewer and saves them in `Downloads/Pocketmux` at the same time, so devices without PDF support do not get a blank WebView. Files remain available across Pocketmux restarts for up to seven days, or until you delete them from the inbox. Browser use keeps the WebView/download fallback.
+
+The inbox accepts common PDF, photo, and video formats up to 50 MB per file. Photos and videos preview in the app when the device WebView supports their codec; use **Download file** to save the original to `Downloads/Pocketmux`.
 
 ## Configuration
 

@@ -15,6 +15,28 @@ const PDF_SIGNATURE = Buffer.from('%PDF-');
 
 const OUTBOX_TYPES = new Map([
   ['pdf', { extension: 'pdf', contentType: 'application/pdf', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['jpg', { extension: 'jpg', contentType: 'image/jpeg', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['jpeg', { extension: 'jpg', contentType: 'image/jpeg', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['png', { extension: 'png', contentType: 'image/png', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['gif', { extension: 'gif', contentType: 'image/gif', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['webp', { extension: 'webp', contentType: 'image/webp', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['avif', { extension: 'avif', contentType: 'image/avif', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['heic', { extension: 'heic', contentType: 'image/heic', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['heif', { extension: 'heif', contentType: 'image/heif', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['bmp', { extension: 'bmp', contentType: 'image/bmp', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['tif', { extension: 'tif', contentType: 'image/tiff', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['tiff', { extension: 'tif', contentType: 'image/tiff', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['mp4', { extension: 'mp4', contentType: 'video/mp4', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['m4v', { extension: 'm4v', contentType: 'video/x-m4v', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['mov', { extension: 'mov', contentType: 'video/quicktime', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['webm', { extension: 'webm', contentType: 'video/webm', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['mkv', { extension: 'mkv', contentType: 'video/x-matroska', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['avi', { extension: 'avi', contentType: 'video/x-msvideo', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['3gp', { extension: '3gp', contentType: 'video/3gpp', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['mpeg', { extension: 'mpeg', contentType: 'video/mpeg', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['mpg', { extension: 'mpeg', contentType: 'video/mpeg', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['wmv', { extension: 'wmv', contentType: 'video/x-ms-wmv', maxBytes: MAX_OUTBOX_FILE_BYTES }],
+  ['ogv', { extension: 'ogv', contentType: 'video/ogg', maxBytes: MAX_OUTBOX_FILE_BYTES }],
   ['md', { extension: 'md', contentType: 'text/markdown', maxBytes: 10 * 1024 * 1024 }],
   ['markdown', { extension: 'md', contentType: 'text/markdown', maxBytes: 10 * 1024 * 1024 }],
   ['txt', { extension: 'txt', contentType: 'text/plain', maxBytes: 10 * 1024 * 1024 }],
@@ -169,7 +191,7 @@ async function stageOutboxFile(directory = OUTBOX_ROOT_DIRECTORY, sourcePath, { 
   const originalName = sanitizeOutboxName(name || path.basename(resolvedSourcePath));
   const type = outboxTypeForName(originalName) || outboxTypeForName(resolvedSourcePath);
   if (!type) {
-    throw outboxError('unsupported_file_type', 'Only PDF, Markdown, TXT, and LOG files can be sent to Pocketmux.');
+    throw outboxError('unsupported_file_type', 'Only PDF, images, videos, Markdown, TXT, and LOG files can be sent to Pocketmux.');
   }
   let stat;
   try {
