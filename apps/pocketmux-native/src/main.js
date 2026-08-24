@@ -49,6 +49,7 @@ import {
   removeConnectionProfile,
   renameConnectionProfile,
   saveConnectionProfiles,
+  sshCredentialProfileIds,
   writeStoredValue,
 } from './storage.js';
 
@@ -248,9 +249,21 @@ function profileForServer(serverUrl) {
   return connectionProfiles.find((profile) => profile.serverUrl === serverUrl);
 }
 
+function savedTokenForServer(serverUrl) {
+  const secureToken = String(connectionTokens.get(serverUrl) || '').trim();
+  if (secureToken) return secureToken;
+  return String(
+    legacyConnectionTokens.find((item) => item.serverUrl === serverUrl)?.token || '',
+  ).trim();
+}
+
+function hasSavedTokenForServer(serverUrl) {
+  return Boolean(savedTokenForServer(serverUrl));
+}
+
 function restorableConnectionCandidate() {
   for (const profile of connectionProfiles) {
-    const token = String(connectionTokens.get(profile.serverUrl) || '').trim();
+    const token = savedTokenForServer(profile.serverUrl);
     if (token) return { profile, token };
   }
   return null;
@@ -917,9 +930,25 @@ async function drainCredentialPersistence() {
 
 async function migrateLegacyConnectionTokens(existingCredentialStates) {
   const migration = await migrateLegacyCredentials(legacyConnectionTokens, {
-    buildConnection: buildRemoteConnection,
-    credentialState: async (connection) => existingCredentialStates.get(connection.serverUrl) || 'unknown',
-    validateCredential: validateSavedToken,
+    buildConnection: (serverUrl, token) => {
+      const profile = profileForServer(serverUrl);
+      // SSH profiles cannot be validated until a tunnel exists. The legacy
+      // token is already local app data, so secure it first and let the normal
+      // remote auth handshake reject it if it is no longer valid.
+      if (isSshProfile(profile)) {
+        return Object.freeze({ serverUrl: profile.serverUrl, token, profile });
+      }
+      return buildRemoteConnection(serverUrl, token);
+    },
+    credentialState: async (connection) => {
+      const state = existingCredentialStates.get(connection.serverUrl) || 'unknown';
+      // A cold-start keyring read may report unknown for SSH. Treat it as
+      // retryable missing so an old plaintext token can still be secured.
+      return isSshProfile(connection.profile) && state !== 'present' ? 'missing' : state;
+    },
+    validateCredential: (connection) => (
+      isSshProfile(connection.profile) ? 'valid' : validateSavedToken(connection)
+    ),
     storeCredential: storeLegacyConnectionToken,
     persistMigrationProgress: (remaining) => {
       const activeServers = new Set(connectionProfiles.map((profile) => profile.serverUrl));
@@ -984,6 +1013,9 @@ function applyLanguage() {
   document.querySelectorAll('[data-i18n-placeholder]').forEach((element) => {
     element.placeholder = text(element.dataset.i18nPlaceholder);
   });
+  if (elements.accessToken.dataset.savedTokenHint === 'true') {
+    elements.accessToken.placeholder = text('connect.savedTokenPlaceholder');
+  }
   document.querySelectorAll('[data-i18n-aria-label]').forEach((element) => {
     element.setAttribute('aria-label', text(element.dataset.i18nAriaLabel));
   });
@@ -1519,6 +1551,7 @@ function showConnections({
   focusToken = false,
   focusSsh = false,
   focusJump = false,
+  preserveSavedToken = false,
 } = {}) {
   if (isSshProfile(remoteSession?.profile)) void stopSshTunnel();
   connectionOperations.begin();
@@ -1549,6 +1582,13 @@ function showConnections({
     setSshFormVisibility();
   }
   elements.accessToken.value = '';
+  const keepSavedTokenHint = preserveSavedToken
+    && serverUrl !== undefined
+    && hasSavedTokenForServer(serverUrl);
+  elements.accessToken.dataset.savedTokenHint = keepSavedTokenHint ? 'true' : 'false';
+  elements.accessToken.placeholder = text(
+    keepSavedTokenHint ? 'connect.savedTokenPlaceholder' : 'connect.tokenPlaceholder',
+  );
   setError(message);
   renderSecurityWarning();
   requestAnimationFrame(() => {
@@ -1631,27 +1671,29 @@ function recoveryFocusForError(error) {
 async function resolveSshCredentials(profile, provided = {}) {
   const invoke = await nativeCredentialInvokeWithRetry();
   if (!invoke) throw new Error('ssh-secret-unavailable');
+  const profileIds = sshCredentialProfileIds(profile);
+  if (profileIds.length === 0) throw new Error('ssh-secret-unavailable');
   const readSecret = async (kind, value, { required = false, jump = false } = {}) => {
     const privateKeyKind = kind === 'privateKey' || kind === 'jumpPrivateKey';
     if (value && (!privateKeyKind || value.trim())) return value;
     let stored;
     let readSucceeded = false;
     for (let attempt = 0; attempt < SSH_SECRET_READ_RETRIES; attempt += 1) {
-      try {
-        stored = await invoke('get_ssh_secret', { profileId: profile.id, kind });
-        readSucceeded = true;
-        if (stored && (!privateKeyKind || stored.trim())) return stored;
-        // Android Keystore may report an empty value during cold-start
-        // initialization. Treat it like a transient read, not a permanent
-        // missing credential, and give the next attempt a chance to succeed.
-        if (attempt + 1 < SSH_SECRET_READ_RETRIES) {
-          await new Promise((resolve) => window.setTimeout(resolve, SSH_SECRET_READ_RETRY_DELAY_MS));
+      for (const profileId of profileIds) {
+        try {
+          stored = await invoke('get_ssh_secret', { profileId, kind });
+          readSucceeded = true;
+          if (stored && (!privateKeyKind || stored.trim())) return stored;
+        } catch {
+          // A legacy profile id may no longer exist. Try the deterministic
+          // endpoint id in the same round before treating the read as failed.
         }
-        continue;
-      } catch {
-        if (attempt + 1 < SSH_SECRET_READ_RETRIES) {
-          await new Promise((resolve) => window.setTimeout(resolve, SSH_SECRET_READ_RETRY_DELAY_MS));
-        }
+      }
+      // Android Keystore may report an empty value during cold-start
+      // initialization. Treat it like a transient read, not a permanent
+      // missing credential, and give the next attempt a chance to succeed.
+      if (attempt + 1 < SSH_SECRET_READ_RETRIES) {
+        await new Promise((resolve) => window.setTimeout(resolve, SSH_SECRET_READ_RETRY_DELAY_MS));
       }
     }
     if (!readSucceeded) {
@@ -1797,32 +1839,28 @@ async function establishSshTunnel(profile, providedCredentials = {}) {
   }
   if (!result?.localUrl) throw new Error('ssh-unavailable');
 
-  const providedSecret = (kind) => {
-    const value = providedCredentials?.[kind];
-    return typeof value === 'string' && value.trim().length > 0;
-  };
+  const profileIds = sshCredentialProfileIds(trustedProfile);
   const persistSecret = async (kind, secret) => {
-    // Secrets read from the keyring are already durable. Only write values
-    // entered in the form; this keeps reconnects from needlessly touching the
-    // Android keystore and makes a failed first write visible to the user.
-    if (!secret || !providedSecret(kind)) return;
-    let persisted = false;
-    for (let attempt = 0; attempt < SSH_SECRET_WRITE_RETRIES; attempt += 1) {
-      try {
-        await credentials.invoke('set_ssh_secret', {
-          profileId: trustedProfile.id,
-          kind,
-          secret,
-        });
-        persisted = true;
-        break;
-      } catch {
-        if (attempt + 1 < SSH_SECRET_WRITE_RETRIES) {
-          await new Promise((resolve) => window.setTimeout(resolve, SSH_SECRET_WRITE_RETRY_DELAY_MS));
+    if (!secret || !String(secret).trim()) return;
+    for (const profileId of profileIds) {
+      let persisted = false;
+      for (let attempt = 0; attempt < SSH_SECRET_WRITE_RETRIES; attempt += 1) {
+        try {
+          await credentials.invoke('set_ssh_secret', {
+            profileId,
+            kind,
+            secret,
+          });
+          persisted = true;
+          break;
+        } catch {
+          if (attempt + 1 < SSH_SECRET_WRITE_RETRIES) {
+            await new Promise((resolve) => window.setTimeout(resolve, SSH_SECRET_WRITE_RETRY_DELAY_MS));
+          }
         }
       }
+      if (!persisted) throw new Error('ssh-secret-persistence-failed');
     }
-    if (!persisted) throw new Error('ssh-secret-persistence-failed');
   };
   try {
     if (trustedProfile.ssh.authMethod === 'password') {
@@ -1940,7 +1978,7 @@ async function navigateConnection(
 
 async function navigateToSshProfile(profile, tokenInput = '', providedCredentials = {}, { pushHistory = true } = {}) {
   if (!isSshProfile(profile)) throw new Error('ssh-invalid-config');
-  const token = String(tokenInput || connectionTokens.get(profile.serverUrl) || '').trim();
+  const token = String(tokenInput || savedTokenForServer(profile.serverUrl) || '').trim();
   if (!token) throw new Error('missing-token');
   const operation = connectionOperations.begin();
   await sshStopPromise;
@@ -1968,7 +2006,7 @@ async function navigateToServer(serverInput, tokenInput = '', { pushHistory = tr
   }
   if (isSshProfile(remoteSession?.profile)) await stopSshTunnel();
   const candidate = buildRemoteConnection(serverInput, tokenInput);
-  const savedToken = connectionTokens.get(candidate.serverUrl) || '';
+  const savedToken = savedTokenForServer(candidate.serverUrl);
   const connection = tokenInput || candidate.hasToken || !savedToken
     ? candidate
     : buildRemoteConnection(candidate.serverUrl, savedToken);
@@ -2006,6 +2044,7 @@ async function restoreMostRecentConnection() {
     showConnections({
       serverUrl: profile.serverUrl,
       message: localizedError(error),
+      preserveSavedToken: sshErrorText(error) !== 'missing-token',
       ...recoveryFocusForError(error),
     });
     return false;
@@ -2017,7 +2056,7 @@ async function switchConnection(serverUrl) {
   if (plan.type === 'none') return;
   const profile = profileForServer(serverUrl);
   if (isSshProfile(profile)) {
-    const token = connectionTokens.get(serverUrl) || '';
+    const token = savedTokenForServer(serverUrl);
     if (!token) {
       showConnections({
         serverUrl,
@@ -2101,7 +2140,7 @@ async function exitNativeApp() {
 async function reloadRemoteConnection() {
   if (!remoteSession?.targetUrl) return;
   if (isSshProfile(remoteSession.profile)) {
-    const token = connectionTokens.get(remoteSession.serverUrl) || '';
+    const token = savedTokenForServer(remoteSession.serverUrl);
     try {
       await navigateToSshProfile(remoteSession.profile, token, {}, { pushHistory: false });
     } catch (error) {
@@ -2148,7 +2187,7 @@ function recentServerRow(serverUrl) {
       elements.serverUrl.value = serverUrl;
       setSshFormVisibility();
     }
-    const savedToken = connectionTokens.get(serverUrl) || '';
+    const savedToken = savedTokenForServer(serverUrl);
     if (!savedToken) {
       elements.accessToken.value = '';
       elements.accessToken.focus();
@@ -2185,7 +2224,9 @@ function recentServerRow(serverUrl) {
       const invoke = await nativeCredentialInvokeWithRetry();
       try {
         await stopSshTunnel();
-        await invoke?.('delete_ssh_secrets', { profileId: profile.id });
+        for (const profileId of sshCredentialProfileIds(profile)) {
+          await invoke?.('delete_ssh_secrets', { profileId });
+        }
       } catch {
         // The profile is still removed locally; stale native state is harmless on next launch.
       }
@@ -2406,7 +2447,7 @@ window.addEventListener('popstate', () => {
     if (isSshProfile(remoteSession.profile)) {
       void navigateToSshProfile(
         remoteSession.profile,
-        connectionTokens.get(remoteSession.serverUrl) || '',
+        savedTokenForServer(remoteSession.serverUrl),
         {},
         { pushHistory: false },
       );

@@ -11,6 +11,7 @@ import {
   renameConnectionProfile,
   rememberRecentServer,
   saveConnectionProfiles,
+  sshCredentialProfileIds,
   writeStoredValue,
 } from '../src/storage.js';
 
@@ -197,6 +198,31 @@ test('renames a connection without changing its server URL or ordering', () => {
     { serverUrl: 'https://one.example/' },
     { serverUrl: 'https://two.example/', name: 'Home GPU' },
   ]);
+});
+
+test('keeps a deterministic SSH credential alias alongside the profile id', () => {
+  const profile = {
+    id: 'legacy-profile-1234',
+    transport: 'ssh',
+    serverUrl: 'ssh://legacy-profile-1234/',
+    ssh: {
+      host: '10.12.120.237',
+      port: 11222,
+      username: 'kyx',
+      authMethod: 'password',
+      remotePort: 3789,
+      jump: {
+        host: '10.12.120.125',
+        port: 22,
+        username: 'kyx',
+        authMethod: 'password',
+      },
+    },
+  };
+  const ids = sshCredentialProfileIds(profile);
+  assert.deepEqual(ids, ['legacy-profile-1234', ids[1]]);
+  assert.match(ids[1], /^ssh-[0-9a-f]{8}$/);
+  assert.deepEqual(sshCredentialProfileIds({ ...profile, id: ids[1] }), [ids[1]]);
 });
 
 test('keeps a custom connection name when metadata is refreshed and clears it with an empty rename', () => {

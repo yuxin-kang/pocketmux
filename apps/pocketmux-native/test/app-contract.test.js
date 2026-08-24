@@ -88,8 +88,8 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   const capability = JSON.parse(capabilityText);
 
   assert.match(html, /连接后会直接打开原有网页界面/);
-  assert.match(html, /styles\.css\?v=20260824-recovery-2200/);
-  assert.match(html, /main\.js\?v=20260824-recovery-2200/);
+  assert.match(html, /styles\.css\?v=20260824-ssh-credentials-2300/);
+  assert.match(html, /main\.js\?v=20260824-ssh-credentials-2300/);
   assert.match(html, /id="remote-menu-toggle"[^>]+aria-expanded="false"[\s\S]*?<span aria-hidden="true">›<\/span>/);
   assert.match(html, /id="remote-drawer"[^>]+aria-hidden="true"[^>]+inert/);
   assert.match(html, /id="refresh-remote"/);
@@ -129,7 +129,8 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /writeStoredValue\(storage, REMOTE_HANDLE_POSITION_KEY/);
   assert.match(main, /if \(!shouldBeginDrawerSwipe\(event\.target\)\) return/);
   assert.match(main, /planConnectionSwitch/);
-  assert.match(main, /const savedToken = connectionTokens\.get\(candidate\.serverUrl\) \|\| ''/);
+  assert.match(main, /function savedTokenForServer\(serverUrl\)/);
+  assert.match(main, /const savedToken = savedTokenForServer\(candidate\.serverUrl\)/);
   assert.match(main, /targetUrl\.searchParams\.set\('native', '1'\)/);
   assert.match(main, /setLocalizedError\(error\)/);
   assert.match(main, /const targets = \[[\s\S]*?remoteSession\.serverUrl,[\s\S]*?recentServers\.filter/);
@@ -188,6 +189,13 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.doesNotMatch(main, /rememberConnectionProfile[\s\S]{0,200}token:/);
   assert.match(main, /async function restoreMostRecentConnection\(\)/);
   assert.match(main, /function restorableConnectionCandidate\(\)/);
+  assert.match(main, /function hasSavedTokenForServer\(serverUrl\)/);
+  assert.match(main, /preserveSavedToken = false/);
+  assert.match(
+    main,
+    /buildConnection: \(serverUrl, token\) => \{[\s\S]*?if \(isSshProfile\(profile\)\)[\s\S]*?Object\.freeze\(\{ serverUrl: profile\.serverUrl, token, profile \}\)/,
+  );
+  assert.match(main, /isSshProfile\(connection\.profile\) && state !== 'present' \? 'missing' : state/);
   assert.match(main, /const candidate = restorableConnectionCandidate\(\)/);
   assert.match(main, /CREDENTIAL_READ_MAX_ATTEMPTS = 3/);
   assert.match(main, /shouldRetryCredentialRead\(states\)/);
@@ -286,7 +294,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.windows[0].generalAutofillEnabled, false);
   assert.equal(config.identifier, 'io.github.yuxinkang.pocketmux');
-  assert.equal(config.bundle.android.versionCode, 1026);
+  assert.equal(config.bundle.android.versionCode, 1027);
   assert.match(config.app.security.csp, /frame-src http: https:/);
   assert.deepEqual(capability.permissions, ['core:default']);
   assert.equal('remote' in capability, false);
@@ -324,7 +332,8 @@ test('does not hide SSH secret persistence failures behind a connected remote pa
   assert.match(sshSource, /set_ssh_secret/);
   assert.match(sshSource, /ssh-secret-persistence-failed/);
   assert.match(sshSource, /await stopSshTunnel\(\);[\s\S]*?throw error/);
-  assert.match(sshSource, /providedSecret\(kind\)/);
+  assert.match(sshSource, /sshCredentialProfileIds\(trustedProfile\)/);
+  assert.match(sshSource, /for \(const profileId of profileIds\)/);
 });
 
 test('routes startup SSH recovery errors to the matching credential field', async () => {

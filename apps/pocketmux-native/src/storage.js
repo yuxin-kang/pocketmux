@@ -23,6 +23,18 @@ function stableSshId(item) {
   return `ssh-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
+// SSH credentials used to be keyed only by the profile's generated id.  Keep
+// that id for compatibility, but also derive a deterministic endpoint id so a
+// profile can recover credentials if an older build recreated its metadata id
+// during a restart or edit.
+export function sshCredentialProfileIds(profile) {
+  if (!profile?.ssh) return [];
+  return [...new Set([
+    normalizeSshId(profile.id),
+    stableSshId(profile),
+  ].filter(Boolean))];
+}
+
 function normalizeSshJump(value) {
   if (!value || typeof value !== 'object') return null;
   const host = typeof value.host === 'string' ? value.host.trim() : '';
