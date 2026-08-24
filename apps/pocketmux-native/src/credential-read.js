@@ -57,3 +57,9 @@ export function mergeCredentialReadResults(currentTokens, serverUrls, results) {
   });
   return states;
 }
+
+export function shouldRetryCredentialRead(states) {
+  return [...(states?.values?.() || [])].some(
+    (state) => state === 'missing' || state === 'unknown',
+  );
+}

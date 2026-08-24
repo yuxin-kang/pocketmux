@@ -25,6 +25,9 @@ use serde::Deserialize;
 use tauri::Manager;
 use tauri_plugin_keyring_store::KeyringExt;
 
+mod ssh_tunnel;
+use ssh_tunnel::SshTunnelManager;
+
 const POCKETMUX_PRODUCT: &str = "pocketmux";
 const POCKETMUX_PROTOCOL_VERSION: u32 = 1;
 const POCKETMUX_PRODUCT_HEADER: &str = "x-pocketmux-product";
@@ -114,6 +117,26 @@ fn token_account(server_url: &str) -> String {
     format!("connection:{server_url}")
 }
 
+fn ssh_secret_account(profile_id: &str, kind: &str) -> Result<String, String> {
+    if !matches!(
+        kind,
+        "password"
+            | "privateKey"
+            | "keyPassphrase"
+            | "jumpPassword"
+            | "jumpPrivateKey"
+            | "jumpKeyPassphrase"
+    ) || profile_id.len() < 8
+        || profile_id.len() > 80
+        || !profile_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Err("invalid SSH secret account".into());
+    }
+    Ok(format!("ssh:{kind}:{profile_id}"))
+}
+
 fn server_origin(server_url: &str) -> String {
     reqwest::Url::parse(server_url)
         .map(|url| {
@@ -169,11 +192,73 @@ fn exit_app(
     app: tauri::AppHandle,
     webview: tauri::WebviewWindow,
     shell_session: tauri::State<'_, ShellSession>,
+    ssh_tunnels: tauri::State<'_, SshTunnelManager>,
     session_token: String,
 ) -> Result<(), String> {
     authorize_shell(&webview, &shell_session, &session_token)?;
+    ssh_tunnel::stop(&ssh_tunnels)?;
     app.exit(0);
     Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn start_ssh_tunnel(
+    webview: tauri::WebviewWindow,
+    shell_session: tauri::State<'_, ShellSession>,
+    ssh_tunnels: tauri::State<'_, SshTunnelManager>,
+    session_token: String,
+    host: String,
+    port: u16,
+    username: String,
+    auth_method: String,
+    password: Option<String>,
+    private_key: Option<String>,
+    key_passphrase: Option<String>,
+    remote_host: String,
+    remote_port: u16,
+    jump: Option<ssh_tunnel::SshJumpConfig>,
+    local_port: Option<u16>,
+    host_key_fingerprint: Option<String>,
+) -> Result<ssh_tunnel::SshTunnelStartResult, String> {
+    authorize_shell(&webview, &shell_session, &session_token)?;
+    ssh_tunnel::start(
+        &ssh_tunnels,
+        host,
+        port,
+        username,
+        auth_method,
+        password,
+        private_key,
+        key_passphrase,
+        remote_host,
+        remote_port,
+        jump,
+        local_port,
+        host_key_fingerprint,
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn stop_ssh_tunnel(
+    webview: tauri::WebviewWindow,
+    shell_session: tauri::State<'_, ShellSession>,
+    ssh_tunnels: tauri::State<'_, SshTunnelManager>,
+    session_token: String,
+) -> Result<(), String> {
+    authorize_shell(&webview, &shell_session, &session_token)?;
+    ssh_tunnel::stop(&ssh_tunnels)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn ssh_tunnel_status(
+    webview: tauri::WebviewWindow,
+    shell_session: tauri::State<'_, ShellSession>,
+    ssh_tunnels: tauri::State<'_, SshTunnelManager>,
+    session_token: String,
+) -> Result<Option<u16>, String> {
+    authorize_shell(&webview, &shell_session, &session_token)?;
+    ssh_tunnel::status(&ssh_tunnels)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -311,7 +396,15 @@ async fn set_connection_token(
         with_credential_lock(&mutation_lock, || {
             store
                 .set_password(&account, &token)
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string())?;
+            match store
+                .get_password(&account)
+                .map_err(|error| error.to_string())?
+            {
+                Some(stored) if stored == token => Ok(()),
+                Some(_) => Err("credential persistence verification mismatch".into()),
+                None => Err("credential persistence verification missing".into()),
+            }
         })
     })
     .await
@@ -407,12 +500,145 @@ async fn reject_connection_token(
     })
 }
 
+#[tauri::command(rename_all = "camelCase")]
+async fn get_ssh_secret(
+    app: tauri::AppHandle,
+    webview: tauri::WebviewWindow,
+    shell_session: tauri::State<'_, ShellSession>,
+    session_token: String,
+    profile_id: String,
+    kind: String,
+) -> Result<Option<String>, String> {
+    authorize_shell(&webview, &shell_session, &session_token)?;
+    let account = ssh_secret_account(&profile_id, &kind)?;
+    auth_info!(
+        "[pocketmux-auth] SSH secret read start profile={} kind={}",
+        profile_id,
+        kind
+    );
+    let store = app.keyring().store.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        store
+            .get_password(&account)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    match &result {
+        Ok(Some(_)) => auth_info!(
+            "[pocketmux-auth] SSH secret read found profile={} kind={}",
+            profile_id,
+            kind
+        ),
+        Ok(None) => auth_info!(
+            "[pocketmux-auth] SSH secret read missing profile={} kind={}",
+            profile_id,
+            kind
+        ),
+        Err(error) => auth_error!(
+            "[pocketmux-auth] SSH secret read failed profile={} kind={} error={}",
+            profile_id,
+            kind,
+            error
+        ),
+    }
+    result
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn set_ssh_secret(
+    app: tauri::AppHandle,
+    webview: tauri::WebviewWindow,
+    shell_session: tauri::State<'_, ShellSession>,
+    lock: tauri::State<'_, CredentialMutationLock>,
+    session_token: String,
+    profile_id: String,
+    kind: String,
+    secret: String,
+) -> Result<(), String> {
+    authorize_shell(&webview, &shell_session, &session_token)?;
+    if secret.trim().is_empty() {
+        return Err("SSH secret must not be empty".into());
+    }
+    let account = ssh_secret_account(&profile_id, &kind)?;
+    auth_info!(
+        "[pocketmux-auth] SSH secret write start profile={} kind={}",
+        profile_id,
+        kind
+    );
+    let store = app.keyring().store.clone();
+    let mutation_lock = Arc::clone(&lock.0);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        with_credential_lock(&mutation_lock, || {
+            store
+                .set_password(&account, &secret)
+                .map_err(|error| error.to_string())?;
+            match store
+                .get_password(&account)
+                .map_err(|error| error.to_string())?
+            {
+                Some(stored) if stored == secret => Ok(()),
+                Some(_) => Err("SSH secret persistence verification mismatch".into()),
+                None => Err("SSH secret persistence verification missing".into()),
+            }
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    match &result {
+        Ok(()) => auth_info!(
+            "[pocketmux-auth] SSH secret write success profile={} kind={}",
+            profile_id,
+            kind
+        ),
+        Err(error) => auth_error!(
+            "[pocketmux-auth] SSH secret write failed profile={} kind={} error={}",
+            profile_id,
+            kind,
+            error
+        ),
+    }
+    result
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn delete_ssh_secrets(
+    app: tauri::AppHandle,
+    webview: tauri::WebviewWindow,
+    shell_session: tauri::State<'_, ShellSession>,
+    lock: tauri::State<'_, CredentialMutationLock>,
+    session_token: String,
+    profile_id: String,
+) -> Result<(), String> {
+    authorize_shell(&webview, &shell_session, &session_token)?;
+    let accounts = [
+        ssh_secret_account(&profile_id, "password")?,
+        ssh_secret_account(&profile_id, "privateKey")?,
+        ssh_secret_account(&profile_id, "keyPassphrase")?,
+        ssh_secret_account(&profile_id, "jumpPassword")?,
+        ssh_secret_account(&profile_id, "jumpPrivateKey")?,
+        ssh_secret_account(&profile_id, "jumpKeyPassphrase")?,
+    ];
+    let store = app.keyring().store.clone();
+    let mutation_lock = Arc::clone(&lock.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        with_credential_lock(&mutation_lock, || {
+            for account in accounts {
+                let _ = store.delete(&account);
+            }
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         authorize_shell_context, classify_token_validation, has_pocketmux_identity, health_url,
-        register_shell_session_context, server_origin, token_account, with_credential_lock,
-        HealthResponse,
+        register_shell_session_context, server_origin, ssh_secret_account, token_account,
+        with_credential_lock, HealthResponse,
     };
     use reqwest::{header::HeaderMap, StatusCode};
     use std::{
@@ -439,6 +665,15 @@ mod tests {
             classify_token_validation(StatusCode::BAD_GATEWAY, false, None),
             "unknown"
         );
+    }
+
+    #[test]
+    fn ssh_secret_accounts_are_scoped_by_jump_role() {
+        assert_eq!(
+            ssh_secret_account("profile-123", "jumpPassword").unwrap(),
+            "ssh:jumpPassword:profile-123"
+        );
+        assert!(ssh_secret_account("profile-123", "unknown").is_err());
     }
 
     #[test]
@@ -599,15 +834,22 @@ pub fn run() {
     builder
         .manage(CredentialMutationLock(Arc::new(Mutex::new(()))))
         .manage(ShellSession(Mutex::new(None)))
+        .manage(SshTunnelManager::default())
         .plugin(tauri_plugin_keyring_store::init())
         .invoke_handler(tauri::generate_handler![
             register_shell_session,
             exit_app,
+            start_ssh_tunnel,
+            stop_ssh_tunnel,
+            ssh_tunnel_status,
             validate_token,
             get_connection_tokens,
             set_connection_token,
             delete_connection_token,
-            reject_connection_token
+            reject_connection_token,
+            get_ssh_secret,
+            set_ssh_secret,
+            delete_ssh_secrets
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Pocketmux");

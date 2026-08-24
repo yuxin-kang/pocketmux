@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   mergeCredentialReadResults,
+  shouldRetryCredentialRead,
   withCredentialReadTimeout,
 } from '../src/credential-read.js';
 
@@ -40,4 +41,10 @@ test('classifies malformed keyring results as unknown', () => {
   );
 
   assert.equal(states.get('https://example.test/'), 'unknown');
+});
+
+test('retries both transient missing and unavailable credential reads', () => {
+  assert.equal(shouldRetryCredentialRead(new Map([['server', 'missing']])), true);
+  assert.equal(shouldRetryCredentialRead(new Map([['server', 'unknown']])), true);
+  assert.equal(shouldRetryCredentialRead(new Map([['server', 'present']])), false);
 });

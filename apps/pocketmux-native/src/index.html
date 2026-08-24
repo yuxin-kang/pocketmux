@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#101114">
     <meta name="description" content="Connect the Pocketmux app to a self-hosted Pocketmux server">
     <link rel="icon" href="assets/pocketmux-icon.png?v=20260812-pocket-terminal" type="image/png">
-    <link rel="stylesheet" href="styles.css?v=20260821-media-inbox-1026">
+    <link rel="stylesheet" href="styles.css?v=20260824-recovery-2200">
     <title>Pocketmux</title>
-    <script type="module" src="main.js?v=20260821-media-inbox-1026" defer></script>
+    <script type="module" src="main.js?v=20260824-recovery-2200" defer></script>
   </head>
   <body>
     <div class="app-frame">
@@ -36,9 +36,84 @@
           </div>
 
           <form id="connection-form" class="connection-form" novalidate>
+            <label for="connection-transport" data-i18n="connect.transportLabel">连接方式</label>
+            <select id="connection-transport" name="transport" class="connection-select">
+              <option value="direct" data-i18n="connect.transportDirect">HTTPS / Web 地址</option>
+              <option value="ssh" data-i18n="connect.transportSsh">SSH 通道</option>
+            </select>
+
+            <div id="direct-connection-fields">
             <label for="server-url" data-i18n="connect.urlLabel">服务器地址</label>
             <input id="server-url" name="serverUrl" type="text" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="https://example.trycloudflare.com" data-i18n-placeholder="connect.urlPlaceholder" required>
             <p class="field-hint" data-i18n="connect.urlHint">也可以粘贴包含 ?token= 的完整 Pocketmux 地址。</p>
+            </div>
+
+            <div id="ssh-connection-fields" class="is-hidden">
+              <label for="ssh-host" data-i18n="connect.sshHostLabel">目标 SSH 主机</label>
+              <input id="ssh-host" name="sshHost" type="text" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="server.example.com" data-i18n-placeholder="connect.sshHostPlaceholder">
+              <div class="ssh-grid">
+                <div>
+                  <label for="ssh-port" data-i18n="connect.sshPortLabel">目标 SSH 端口</label>
+                  <input id="ssh-port" name="sshPort" type="number" inputmode="numeric" min="1" max="65535" value="22">
+                </div>
+                <div>
+                  <label for="ssh-username" data-i18n="connect.sshUsernameLabel">用户名</label>
+                  <input id="ssh-username" name="sshUsername" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="root" data-i18n-placeholder="connect.sshUsernamePlaceholder">
+                </div>
+              </div>
+              <label class="ssh-jump-toggle" for="ssh-jump-enabled">
+                <input id="ssh-jump-enabled" name="sshJumpEnabled" type="checkbox">
+                <span data-i18n="connect.sshJumpToggle">通过跳板机连接</span>
+              </label>
+              <div id="ssh-jump-fields" class="is-hidden">
+                <label for="ssh-jump-host" data-i18n="connect.sshJumpHostLabel">跳板机主机</label>
+                <input id="ssh-jump-host" name="sshJumpHost" type="text" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="jump.example.com" data-i18n-placeholder="connect.sshJumpHostPlaceholder">
+                <div class="ssh-grid">
+                  <div>
+                    <label for="ssh-jump-port" data-i18n="connect.sshJumpPortLabel">跳板机端口</label>
+                    <input id="ssh-jump-port" name="sshJumpPort" type="number" inputmode="numeric" min="1" max="65535" value="22">
+                  </div>
+                  <div>
+                    <label for="ssh-jump-username" data-i18n="connect.sshJumpUsernameLabel">跳板机用户名</label>
+                    <input id="ssh-jump-username" name="sshJumpUsername" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="jumpuser" data-i18n-placeholder="connect.sshJumpUsernamePlaceholder">
+                  </div>
+                </div>
+                <label for="ssh-jump-auth-method" data-i18n="connect.sshJumpAuthLabel">跳板机认证方式</label>
+                <select id="ssh-jump-auth-method" name="sshJumpAuthMethod" class="connection-select">
+                  <option value="password" data-i18n="connect.sshPasswordAuth">密码</option>
+                  <option value="privateKey" data-i18n="connect.sshPrivateKeyAuth">私钥</option>
+                </select>
+                <div id="ssh-jump-password-field">
+                  <label for="ssh-jump-password" data-i18n="connect.sshJumpPasswordLabel">跳板机密码</label>
+                  <input id="ssh-jump-password" name="sshJumpPassword" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false">
+                </div>
+                <div id="ssh-jump-private-key-fields" class="is-hidden">
+                  <label for="ssh-jump-private-key" data-i18n="connect.sshJumpPrivateKeyLabel">跳板机 OpenSSH 私钥</label>
+                  <textarea id="ssh-jump-private-key" name="sshJumpPrivateKey" rows="5" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" data-i18n-placeholder="connect.sshPrivateKeyPlaceholder"></textarea>
+                  <label for="ssh-jump-key-passphrase" data-i18n="connect.sshJumpPassphraseLabel">跳板机私钥口令（可选）</label>
+                  <input id="ssh-jump-key-passphrase" name="sshJumpKeyPassphrase" type="password" autocomplete="off" autocapitalize="none" spellcheck="false">
+                </div>
+                <p class="field-hint" data-i18n="connect.sshJumpHint">App 会先连接跳板机，再从跳板机连接目标 SSH 主机。</p>
+              </div>
+              <label for="ssh-auth-method" data-i18n="connect.sshAuthLabel">SSH 认证方式</label>
+              <select id="ssh-auth-method" name="sshAuthMethod" class="connection-select">
+                <option value="password" data-i18n="connect.sshPasswordAuth">密码</option>
+                <option value="privateKey" data-i18n="connect.sshPrivateKeyAuth">私钥</option>
+              </select>
+              <div id="ssh-password-field">
+                <label for="ssh-password" data-i18n="connect.sshPasswordLabel">SSH 密码</label>
+                <input id="ssh-password" name="sshPassword" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false">
+              </div>
+              <div id="ssh-private-key-fields" class="is-hidden">
+                <label for="ssh-private-key" data-i18n="connect.sshPrivateKeyLabel">OpenSSH 私钥</label>
+                <textarea id="ssh-private-key" name="sshPrivateKey" rows="5" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" data-i18n-placeholder="connect.sshPrivateKeyPlaceholder"></textarea>
+                <label for="ssh-key-passphrase" data-i18n="connect.sshPassphraseLabel">私钥口令（可选）</label>
+                <input id="ssh-key-passphrase" name="sshKeyPassphrase" type="password" autocomplete="off" autocapitalize="none" spellcheck="false">
+              </div>
+              <label for="ssh-remote-port" data-i18n="connect.sshRemotePortLabel">服务器上的 Pocketmux 端口</label>
+              <input id="ssh-remote-port" name="sshRemotePort" type="number" inputmode="numeric" min="1" max="65535" value="3789">
+              <p class="field-hint" data-i18n="connect.sshHint">App 只通过 SSH 访问服务器本机的 127.0.0.1，不会把端口暴露到公网。</p>
+            </div>
 
             <label for="access-token" data-i18n="connect.tokenLabel">访问令牌</label>
             <div class="token-row">
@@ -56,7 +131,7 @@
 
           <div class="privacy-note">
             <span class="privacy-icon" aria-hidden="true">◇</span>
-            <p data-i18n="connect.privacy">App 仅在本机安全保存连接地址和 Token；服务器确认失效后会移除对应 Token。</p>
+            <p data-i18n="connect.privacy">App 仅在本机安全保存连接信息和 Token；服务器确认失效后会移除对应 Token。</p>
           </div>
         </section>
 

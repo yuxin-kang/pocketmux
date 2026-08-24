@@ -15,10 +15,15 @@
   --success: #78c9a5;
   --warning: #e8c37c;
   --danger: #f17878;
-  --mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
-  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "Roboto Mono", "Noto Sans Mono", "SFMono-Regular", "Cascadia Code", Menlo, Consolas, monospace;
+  /*
+   * Put a CJK-capable family first so Latin and Chinese glyphs come from the
+   * same design.  Roboto-first made the browser use Roboto for English and a
+   * visibly different fallback face for Chinese in the launcher.
+   */
+  --sans: "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans", "Roboto", "Segoe UI", system-ui, sans-serif;
   font-family: var(--sans);
-  font-synthesis: none;
+  font-synthesis: weight;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -webkit-text-size-adjust: 100%;
@@ -36,7 +41,7 @@ body {
   color: var(--text);
 }
 
-button, input { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { color: inherit; }
 button:focus-visible, input:focus-visible, iframe:focus-visible {
   outline: 2px solid var(--accent);
@@ -93,9 +98,9 @@ button:focus-visible, input:focus-visible, iframe:focus-visible {
   background: transparent;
   color: var(--faint);
   cursor: pointer;
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: 10px;
-  font-weight: 750;
+  font-weight: 650;
 }
 .language-button:hover { color: var(--text); background: var(--surface-soft); }
 .language-button[aria-pressed="true"] { background: var(--accent); color: #231614; }
@@ -135,12 +140,14 @@ button:focus-visible, input:focus-visible, iframe:focus-visible {
 .heading-group { margin-top: 24px; }
 .eyebrow { margin: 0; color: var(--accent); font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; }
 h1, h2, p { margin: 0; }
-h1 { margin-top: 7px; font-size: clamp(26px, 4vw, 38px); letter-spacing: -0.045em; }
-h2 { margin-top: 6px; font-size: 18px; letter-spacing: -0.03em; }
+h1 { margin-top: 7px; font-size: clamp(26px, 4vw, 38px); font-weight: 700; letter-spacing: -0.035em; }
+h2 { margin-top: 6px; font-size: 18px; font-weight: 650; letter-spacing: -0.025em; }
+:lang(zh-CN) h1,
+:lang(zh-CN) h2 { letter-spacing: 0; }
 .intro { max-width: 560px; margin-top: 13px; color: var(--muted); font-size: 13px; line-height: 1.65; }
 
 .connection-form { margin-top: 30px; }
-.connection-form > label { display: block; margin: 16px 0 8px; color: var(--muted); font-size: 11px; font-weight: 650; }
+.connection-form label:not(.ssh-jump-toggle) { display: block; margin: 16px 0 8px; color: var(--muted); font-size: 11px; font-weight: 600; line-height: 1.3; }
 .connection-form input {
   width: 100%;
   height: 48px;
@@ -150,9 +157,44 @@ h2 { margin-top: 6px; font-size: 18px; letter-spacing: -0.03em; }
   outline: 0;
   background: #0d0e11;
   color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+}
+.connection-form input:is(#server-url, #ssh-host, #ssh-port, #ssh-remote-port, #ssh-jump-host, #ssh-jump-port, #access-token) {
   font-family: var(--mono);
   font-size: 12px;
+  font-weight: 400;
 }
+.connection-form textarea,
+.connection-select {
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  outline: 0;
+  background: #0d0e11;
+  color: var(--text);
+  font-size: 12px;
+}
+.connection-form textarea { resize: vertical; font-family: var(--mono); }
+.connection-select {
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.connection-form textarea:focus,
+.connection-select:focus { border-color: var(--accent); }
+.connection-select { height: 48px; padding-top: 0; padding-bottom: 0; }
+.ssh-grid { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 10px; }
+.ssh-grid label, #ssh-connection-fields > label { margin-top: 14px; }
+.ssh-jump-toggle { display: flex; align-items: center; gap: 8px; margin-top: 16px; color: var(--muted); font-size: 11px; font-weight: 600; cursor: pointer; }
+.ssh-jump-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+#ssh-jump-fields { margin-top: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(16, 17, 20, 0.45); }
+#ssh-jump-fields > label { display: block; margin: 10px 0 8px; color: var(--muted); font-size: 11px; font-weight: 600; }
+#ssh-jump-fields > .field-hint { margin-bottom: 0; }
 .connection-form input:focus { border-color: var(--accent); }
 .connection-form input::placeholder { color: var(--faint); }
 .field-hint { margin-top: 7px; color: var(--faint); font-size: 10px; line-height: 1.5; }
@@ -184,7 +226,7 @@ h2 { margin-top: 6px; font-size: 18px; letter-spacing: -0.03em; }
   background: var(--accent);
   color: #231614;
   cursor: pointer;
-  font-weight: 780;
+  font-weight: 700;
 }
 .primary-button:hover { background: var(--accent-strong); }
 .primary-button:disabled { cursor: wait; opacity: 0.65; }
@@ -405,12 +447,12 @@ h2 { margin-top: 6px; font-size: 18px; letter-spacing: -0.03em; }
 .connection-name-form { padding: 22px; }
 .connection-name-form h2 { margin-top: 6px; }
 .connection-name-server { overflow: hidden; margin-top: 7px; color: var(--faint); font-family: var(--mono); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.connection-name-form label { display: block; margin: 20px 0 8px; color: var(--muted); font-size: 11px; font-weight: 650; }
-.connection-name-form input { width: 100%; height: 48px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 10px; outline: 0; background: #0d0e11; color: var(--text); font-family: var(--mono); font-size: 12px; }
+.connection-name-form label { display: block; margin: 20px 0 8px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.connection-name-form input { width: 100%; height: 48px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 10px; outline: 0; background: #0d0e11; color: var(--text); font-family: var(--sans); font-size: 12px; }
 .connection-name-form input:focus { border-color: var(--accent); }
 .connection-name-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 20px; }
 .connection-name-actions .primary-button { margin-top: 0; justify-content: center; }
-.secondary-button { min-height: 48px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface-soft); color: var(--text); cursor: pointer; font-weight: 700; }
+.secondary-button { min-height: 48px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface-soft); color: var(--text); cursor: pointer; font-weight: 600; }
 .secondary-button:hover { border-color: var(--accent); }
 .remote-loading-cover {
   position: absolute;

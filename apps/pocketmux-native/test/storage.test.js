@@ -252,3 +252,81 @@ test('keeps metadata ordering after switching away, switching back, and reloadin
   assert.equal(switchedBack.connectionProfiles[0].name, 'First');
   assert.equal(switchedBack.persisted, true);
 });
+
+test('persists SSH metadata with a stable logical id and no runtime tunnel port', () => {
+  const storage = memoryStorage();
+  const profile = {
+    id: 'ssh-profile-01',
+    transport: 'ssh',
+    serverUrl: 'ssh://ssh-profile-01/',
+    name: 'GPU host',
+    ssh: {
+      host: 'server.example.com',
+      port: 22,
+      username: 'root',
+      authMethod: 'password',
+      remoteHost: '127.0.0.1',
+      remotePort: 3789,
+      hostKeyFingerprint: 'SHA256:abc',
+    },
+  };
+  const remembered = rememberConnectionProfile(storage, 'profiles', [], profile);
+  assert.equal(remembered.persisted, true);
+  assert.deepEqual(loadConnectionProfiles(storage, 'profiles', 'recent'), [profile]);
+  assert.doesNotMatch(storage.getItem('profiles'), /127\.0\.0\.1:\d{4,5}/);
+});
+
+test('round-trips a ProxyJump profile without storing jump secrets or runtime ports', () => {
+  const storage = memoryStorage();
+  const profile = {
+    transport: 'ssh',
+    name: 'Via gateway',
+    ssh: {
+      host: 'target.example.com',
+      port: 2222,
+      username: 'appuser',
+      authMethod: 'password',
+      remotePort: 3789,
+      hostKeyFingerprint: 'SHA256:target',
+      jump: {
+        host: 'jump.example.com',
+        port: 22,
+        username: 'jumpuser',
+        authMethod: 'password',
+        hostKeyFingerprint: 'SHA256:jump',
+      },
+    },
+  };
+  const remembered = rememberConnectionProfile(storage, 'profiles', [], profile);
+  const [stored] = loadConnectionProfiles(storage, 'profiles', 'recent');
+  assert.equal(remembered.persisted, true);
+  assert.equal(stored.ssh.jump.host, 'jump.example.com');
+  assert.equal(stored.ssh.host, 'target.example.com');
+  assert.match(stored.serverUrl, /^ssh:\/\/[a-z0-9_-]+\/$/);
+  assert.doesNotMatch(storage.getItem('profiles'), /jumpPassword|jumpPrivateKey|runtimePort/);
+});
+
+test('keeps SSH profiles with different Pocketmux ports distinct', () => {
+  const storage = memoryStorage();
+  const base = {
+    transport: 'ssh',
+    ssh: {
+      host: 'target.example.com',
+      port: 2222,
+      username: 'appuser',
+      authMethod: 'password',
+      remoteHost: '127.0.0.1',
+      hostKeyFingerprint: '',
+    },
+  };
+  const first = rememberConnectionProfile(storage, 'profiles', [], {
+    ...base,
+    ssh: { ...base.ssh, remotePort: 3789 },
+  });
+  const second = rememberConnectionProfile(storage, 'profiles', first.connectionProfiles, {
+    ...base,
+    ssh: { ...base.ssh, remotePort: 3790 },
+  });
+  assert.equal(second.connectionProfiles.length, 2);
+  assert.notEqual(second.connectionProfiles[0].serverUrl, second.connectionProfiles[1].serverUrl);
+});

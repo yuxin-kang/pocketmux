@@ -7,7 +7,7 @@ The native app is additive: it does not replace or modify the browser version of
 ## Security boundary
 
 - Only validated access tokens are retained, using Windows Credential Manager or Android Keystore-backed credential storage. Local WebView storage contains only normalized server metadata and display names.
-- Android requires HTTPS. Windows accepts cleartext HTTP only for localhost, private LAN, mDNS (`.local`), and Tailscale addresses.
+- Android requires HTTPS for direct web addresses. The SSH mode uses a loopback-only local endpoint and forwards to Pocketmux on the SSH server's `127.0.0.1` without exposing that port publicly.
 - Remote content runs in a sandboxed cross-origin frame and does not receive the global Tauri API.
 - The reserved Tauri application host and any URL matching the launcher origin are rejected before loading.
 - The app enables no shell, process, file-system, or custom native command permission.
@@ -62,6 +62,12 @@ Android, with a device or emulator available:
 ```bash
 npm run android:dev
 ```
+
+### SSH connection mode
+
+When Pocketmux is listening only on the server (the default `127.0.0.1:3789`), choose **SSH tunnel** in the app instead of exposing it through Cloudflare. Enter the SSH host, port, username, password or OpenSSH private key, the Pocketmux token, and the server-side Pocketmux port. The first connection shows the SSH host-key fingerprint for explicit trust; a changed fingerprint is rejected. SSH credentials and the Pocketmux token are stored in the platform secure store, while the profile metadata never contains secrets.
+
+The built-in mode provides local forwarding (`-L`) for foreground use. If the Pocketmux host is reachable only through another SSH server, enable **通过跳板机连接** and enter the jump host separately; the app authenticates the jump host first, then opens the target SSH connection through it. Both host-key fingerprints must be explicitly trusted. Reverse forwarding, SSH agent, keyboard-interactive MFA, and a background service when the app is stopped are not included.
 
 ## Build
 

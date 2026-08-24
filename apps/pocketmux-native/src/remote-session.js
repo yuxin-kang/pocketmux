@@ -1,9 +1,16 @@
 const REMOTE_STATES = new Set(['loading', 'interactive', 'loaded', 'failed']);
 
-export function beginRemoteSession(serverUrl, targetUrl, storageWarning = false) {
+export function beginRemoteSession(
+  serverUrl,
+  targetUrl,
+  storageWarning = false,
+  { transportServerUrl = serverUrl, profile = null } = {},
+) {
   return Object.freeze({
     serverUrl,
+    transportServerUrl,
     targetUrl,
+    profile,
     storageWarning: Boolean(storageWarning),
     state: 'loading',
   });

@@ -88,8 +88,8 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   const capability = JSON.parse(capabilityText);
 
   assert.match(html, /连接后会直接打开原有网页界面/);
-  assert.match(html, /styles\.css\?v=20260821-media-inbox-1026/);
-  assert.match(html, /main\.js\?v=20260821-media-inbox-1026/);
+  assert.match(html, /styles\.css\?v=20260824-recovery-2200/);
+  assert.match(html, /main\.js\?v=20260824-recovery-2200/);
   assert.match(html, /id="remote-menu-toggle"[^>]+aria-expanded="false"[\s\S]*?<span aria-hidden="true">›<\/span>/);
   assert.match(html, /id="remote-drawer"[^>]+aria-hidden="true"[^>]+inert/);
   assert.match(html, /id="refresh-remote"/);
@@ -110,7 +110,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /const nextFrame = elements\.remoteFrame\.cloneNode\(false\)/);
   assert.match(main, /nextFrame\.src = targetUrl/);
   assert.match(main, /connectionOperations\.isCurrent\(operation\)/);
-  assert.match(main, /beginRemoteSession\(serverUrl, targetUrl, storageWarning\)/);
+  assert.match(main, /beginRemoteSession\([\s\S]*?transportServerUrl/);
   assert.match(main, /elements\.serverUrl\.value = connection\.serverUrl/);
   assert.match(main, /new URL\(connection\.serverUrl\)\.origin === window\.location\.origin/);
   assert.match(main, /REMOTE_LOAD_TIMEOUT_MS = 15000/);
@@ -155,7 +155,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /invoke\('validate_token'/);
   assert.match(
     main,
-    /const operation = connectionOperations\.begin\(\)[\s\S]*?showRemote\(connection\.serverUrl, connection\.targetUrl,[\s\S]*?operation,[\s\S]*?void monitorConnectionValidation\(connection, operation/,
+    /const navigationOperation = operation \|\| connectionOperations\.begin\(\)[\s\S]*?showRemote\(connection\.serverUrl, connection\.targetUrl,[\s\S]*?operation: navigationOperation,[\s\S]*?void monitorConnectionValidation\(connection, navigationOperation/,
   );
   assert.match(main, /async function monitorConnectionValidation\([\s\S]*?if \(!connectionOperations\.isCurrent\(operation\)\) return validation;/);
   assert.doesNotMatch(main, /const validationPromise = validateSavedToken\(connection\)/);
@@ -187,7 +187,20 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /invoke\('reject_connection_token'/);
   assert.doesNotMatch(main, /rememberConnectionProfile[\s\S]{0,200}token:/);
   assert.match(main, /async function restoreMostRecentConnection\(\)/);
-  assert.match(main, /const token = profile \? connectionTokens\.get\(profile\.serverUrl\) : ''/);
+  assert.match(main, /function restorableConnectionCandidate\(\)/);
+  assert.match(main, /const candidate = restorableConnectionCandidate\(\)/);
+  assert.match(main, /CREDENTIAL_READ_MAX_ATTEMPTS = 3/);
+  assert.match(main, /shouldRetryCredentialRead\(states\)/);
+  assert.match(main, /LATE_CREDENTIAL_RECOVERY_MAX_ATTEMPTS = 3/);
+  assert.match(main, /lateCredentialRecoveryAttempts/);
+  assert.match(main, /restoreMostRecentConnection\(\)[\s\S]*?\.finally\(\(\) => \{[\s\S]*?lateCredentialRecoveryStarted = false/);
+  assert.doesNotMatch(
+    main.slice(main.indexOf('const restoreAfterLateRead = () => {'), main.indexOf('const scheduleReadRetry = () => {')),
+    /connectionOperations\.isCurrent\(hydrationOperation\)/,
+  );
+  assert.match(main, /NATIVE_BRIDGE_RETRY_ATTEMPTS = 4/);
+  assert.match(main, /async function nativeCredentialInvokeWithRetry\(\)/);
+  assert.match(main, /const invoke = await nativeCredentialInvokeWithRetry\(\)/);
   assert.match(main, /navigateToServer\(profile\.serverUrl, token, \{ pushHistory: false \}\)/);
   assert.match(main, /await ensureShellSession\(\)[\s\S]*?await initializeNativeApp\(\)/);
   assert.match(main, /window\.crypto\.getRandomValues\(bytes\)/);
@@ -197,7 +210,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /shell-unavailable-during-boot/);
   assert.match(main, /sessionToken: shellSessionToken/);
   assert.match(main, /event\.source !== elements\.remoteFrame\.contentWindow/);
-  assert.match(main, /event\.origin !== new URL\(remoteSession\.serverUrl\)\.origin/);
+  assert.match(main, /event\.origin !== new URL\(remoteSession\.transportServerUrl \|\| remoteSession\.serverUrl\)\.origin/);
   assert.match(main, /event\.data\?\.type === REMOTE_LANGUAGE_MESSAGE_TYPE/);
   assert.match(main, /setLanguage\(event\.data\.language\)/);
   assert.match(main, /REMOTE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required'/);
@@ -269,11 +282,11 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(rust, /fn reject_connection_token\([\s\S]*?lock: tauri::State<'_, CredentialMutationLock>/);
   assert.match(rust, /get_webview_window\("main"\)[\s\S]*?window\.unminimize\(\)[\s\S]*?window\.show\(\)[\s\S]*?window\.set_focus\(\)/);
   assert.match(rust, /\.manage\(CredentialMutationLock\(Arc::new\(Mutex::new\(\(\)\)\)\)\)/);
-  assert.match(rust, /generate_handler!\[[\s\S]*?register_shell_session,[\s\S]*?exit_app,[\s\S]*?validate_token,[\s\S]*?get_connection_tokens,[\s\S]*?set_connection_token,[\s\S]*?delete_connection_token,[\s\S]*?reject_connection_token/);
+  assert.match(rust, /generate_handler!\[[\s\S]*?register_shell_session,[\s\S]*?exit_app,[\s\S]*?start_ssh_tunnel,[\s\S]*?validate_token,[\s\S]*?get_connection_tokens,[\s\S]*?set_connection_token,[\s\S]*?delete_connection_token,[\s\S]*?reject_connection_token,[\s\S]*?get_ssh_secret/);
   assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.windows[0].generalAutofillEnabled, false);
   assert.equal(config.identifier, 'io.github.yuxinkang.pocketmux');
-  assert.equal(config.bundle.android.versionCode, 1025);
+  assert.equal(config.bundle.android.versionCode, 1026);
   assert.match(config.app.security.csp, /frame-src http: https:/);
   assert.deepEqual(capability.permissions, ['core:default']);
   assert.equal('remote' in capability, false);
@@ -282,10 +295,10 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
 test('persists a connection before remote navigation can supersede it', async () => {
   const main = await readFile(path.join(root, 'src', 'main.js'), 'utf8');
   const navigateSource = main.slice(
-    main.indexOf('async function navigateToServer('),
+    main.indexOf('async function navigateConnection('),
     main.indexOf('async function restoreMostRecentConnection('),
   );
-  const rememberIndex = navigateSource.indexOf('rememberConnectionMetadata(connection)');
+  const rememberIndex = navigateSource.indexOf('rememberConnectionMetadata(');
   const storeIndex = navigateSource.indexOf('persistCredential: () => storeConnectionToken(connection');
   const showRemoteIndex = navigateSource.indexOf('showRemote(connection.serverUrl, connection.targetUrl');
 
@@ -297,7 +310,51 @@ test('persists a connection before remote navigation can supersede it', async ()
     'metadata and token must be durable before the remote session opens',
   );
   assert.match(navigateSource, /renderRecentServers\(\)/);
-  assert.match(navigateSource, /storageWarning: !metadataPersisted \|\| !credentialPersisted/);
+  assert.match(navigateSource, /storageWarning: extraStorageWarning \|\| !metadataPersisted \|\| !credentialPersisted/);
+  assert.match(navigateSource, /if \(!metadataPersisted \|\| !credentialPersisted\) \{[\s\S]*?metadata-persistence-failed/);
+  assert.match(navigateSource, /if \(!metadataPersisted \|\| !credentialPersisted\) \{[\s\S]*?credential-persistence-failed/);
+});
+
+test('does not hide SSH secret persistence failures behind a connected remote page', async () => {
+  const main = await readFile(path.join(root, 'src', 'main.js'), 'utf8');
+  const sshSource = main.slice(
+    main.indexOf('async function establishSshTunnel('),
+    main.indexOf('async function navigateConnection('),
+  );
+  assert.match(sshSource, /set_ssh_secret/);
+  assert.match(sshSource, /ssh-secret-persistence-failed/);
+  assert.match(sshSource, /await stopSshTunnel\(\);[\s\S]*?throw error/);
+  assert.match(sshSource, /providedSecret\(kind\)/);
+});
+
+test('routes startup SSH recovery errors to the matching credential field', async () => {
+  const main = await readFile(path.join(root, 'src', 'main.js'), 'utf8');
+  const restoreSource = main.slice(
+    main.indexOf('async function restoreMostRecentConnection('),
+    main.indexOf('async function switchConnection('),
+  );
+  const focusSource = main.slice(
+    main.indexOf('function recoveryFocusForError('),
+    main.indexOf('async function resolveSshCredentials('),
+  );
+  assert.match(restoreSource, /\.\.\.recoveryFocusForError\(error\)/);
+  assert.match(focusSource, /focusSsh: raw === 'ssh-password-required'/);
+  assert.match(focusSource, /focusJump: raw === 'ssh-jump-password-required'/);
+  assert.match(main, /focusJump && elements\.connectionTransport\.value === 'ssh'/);
+});
+
+test('serializes SSH shutdown before a replacement tunnel starts', async () => {
+  const main = await readFile(path.join(root, 'src', 'main.js'), 'utf8');
+  assert.match(main, /let sshStopPromise = Promise\.resolve\(\);/);
+  assert.match(main, /const previousStop = sshStopPromise;[\s\S]*?sshStopPromise = stop\.catch/);
+  const sshNavigation = main.slice(
+    main.indexOf('async function navigateToSshProfile('),
+    main.indexOf('async function navigateToServer('),
+  );
+  assert.ok(
+    sshNavigation.indexOf('await sshStopPromise') < sshNavigation.indexOf('establishSshTunnel('),
+    'a replacement SSH tunnel must wait for any pending stop operation',
+  );
 });
 
 test('allows the active connection to be renamed before profile hydration completes', async () => {
@@ -343,7 +400,7 @@ test('persists a validated token after the user switches to another server', asy
   assert.doesNotMatch(validatedCredential, /initialization/);
 });
 
-test('does not perform a synchronous keyring readback during token writes', async () => {
+test('verifies token persistence after the Android keyring write', async () => {
   const rust = await readFile(path.join(root, 'src-tauri', 'src', 'lib.rs'), 'utf8');
   const setTokenSource = rust.slice(
     rust.indexOf('fn set_connection_token('),
@@ -351,7 +408,41 @@ test('does not perform a synchronous keyring readback during token writes', asyn
   );
 
   assert.match(setTokenSource, /set_password\(&account, &token\)/);
-  assert.doesNotMatch(setTokenSource, /get_password\(/);
+  assert.match(setTokenSource, /get_password\(&account\)/);
+  assert.match(setTokenSource, /credential persistence verification missing/);
+  assert.match(rust, /SSH secret persistence verification missing/);
+});
+
+test('does not treat a failed Android SharedPreferences commit as durable', async () => {
+  const [credentialStore, vault] = await Promise.all([
+    readFile(path.join(
+      root,
+      'src-tauri',
+      'vendor',
+      'android-native-keyring-store',
+      'src',
+      'by_store',
+      'cred.rs',
+    ), 'utf8'),
+    readFile(path.join(
+      root,
+      'src-tauri',
+      'vendor',
+      'android-native-keyring-store',
+      'src',
+      'by_store',
+      'vault.rs',
+    ), 'utf8'),
+  ]);
+
+  assert.match(credentialStore, /let committed = [\s\S]*?commit\(env\)\?;/);
+  assert.match(credentialStore, /if !committed \{/);
+  assert.match(vault, /if !editor\.commit\(env\)\? \{/);
+  assert.equal(
+    (credentialStore.match(/Android SharedPreferences commit failed/g) || []).length,
+    2,
+  );
+  assert.match(vault, /Android SharedPreferences commit failed/);
 });
 
 test('keeps all keyring operations off the synchronous Tauri IPC thread', async () => {
@@ -360,7 +451,7 @@ test('keeps all keyring operations off the synchronous Tauri IPC thread', async 
   assert.match(rust, /async fn set_connection_token\(/);
   assert.match(rust, /async fn delete_connection_token\(/);
   assert.match(rust, /async fn reject_connection_token\(/);
-  assert.equal((rust.match(/tauri::async_runtime::spawn_blocking/g) || []).length, 4);
+  assert.equal((rust.match(/tauri::async_runtime::spawn_blocking/g) || []).length, 7);
 });
 
 test('initializes Android ndk-context before keyring access', async () => {
@@ -449,17 +540,21 @@ test('disables native autofill and exposes accessible connection controls', asyn
 
 test('includes a generated Android project with Pocketmux identity and an HTTPS-only release policy', async () => {
   const androidRoot = path.join(root, 'src-tauri', 'gen', 'android');
-  const [manifest, gradle, activity, wrapper] = await Promise.all([
+  const [manifest, gradle, activity, wrapper, networkSecurity] = await Promise.all([
     readFile(path.join(androidRoot, 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf8'),
     readFile(path.join(androidRoot, 'app', 'build.gradle.kts'), 'utf8'),
     readFile(path.join(androidRoot, 'app', 'src', 'main', 'java', 'io', 'github', 'yuxinkang', 'pocketmux', 'MainActivity.kt'), 'utf8'),
     readFile(path.join(androidRoot, 'gradle', 'wrapper', 'gradle-wrapper.properties'), 'utf8'),
+    readFile(path.join(androidRoot, 'app', 'src', 'main', 'res', 'xml', 'network_security_config.xml'), 'utf8'),
   ]);
 
   await access(path.join(androidRoot, 'gradlew'));
   assert.match(manifest, /android:usesCleartextTraffic="\$\{usesCleartextTraffic\}"/);
+  assert.match(manifest, /android:networkSecurityConfig="@xml\/network_security_config"/);
   assert.match(manifest, /android:windowSoftInputMode="adjustResize"/);
   assert.doesNotMatch(gradle, /manifestPlaceholders\["usesCleartextTraffic"\] = "true"/);
+  assert.match(networkSecurity, /<base-config cleartextTrafficPermitted="false"/);
+  assert.match(networkSecurity, /<domain includeSubdomains="false">127\.0\.0\.1<\/domain>/);
   assert.match(gradle, /manifestPlaceholders\["usesCleartextTraffic"\] = "false"/);
   assert.match(gradle, /applicationId = "io\.github\.yuxinkang\.pocketmux"/);
   assert.match(gradle, /testInstrumentationRunner = "androidx\.test\.runner\.AndroidJUnitRunner"/);

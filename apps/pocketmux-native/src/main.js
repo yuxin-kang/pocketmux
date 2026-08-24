@@ -32,6 +32,7 @@ import { messages, normalizeLanguage } from './i18n.js';
 import { createNativeShellSession } from './native-shell-session.js';
 import {
   mergeCredentialReadResults,
+  shouldRetryCredentialRead,
   withCredentialReadTimeout,
 } from './credential-read.js';
 import {
@@ -61,6 +62,14 @@ const REMOTE_LOAD_TIMEOUT_MS = 15000;
 const REMOTE_REVEAL_DELAY_MS = 400;
 const CREDENTIAL_READ_TIMEOUT_MS = 5000;
 const CREDENTIAL_READ_RETRY_DELAY_MS = 1000;
+const CREDENTIAL_READ_MAX_ATTEMPTS = 3;
+const NATIVE_BRIDGE_RETRY_ATTEMPTS = 4;
+const NATIVE_BRIDGE_RETRY_DELAY_MS = 250;
+const SSH_SECRET_READ_RETRIES = 6;
+const SSH_SECRET_READ_RETRY_DELAY_MS = 500;
+const LATE_CREDENTIAL_RECOVERY_MAX_ATTEMPTS = 3;
+const SSH_SECRET_WRITE_RETRIES = 2;
+const SSH_SECRET_WRITE_RETRY_DELAY_MS = 150;
 const CREDENTIAL_DRAIN_TIMEOUT_MS = 10000;
 const REMOTE_LANGUAGE_MESSAGE_TYPE = 'pocketmux:language';
 const REMOTE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required';
@@ -102,7 +111,31 @@ const elements = {
   launcher: document.querySelector('#launcher'),
   footer: document.querySelector('#app-footer'),
   form: document.querySelector('#connection-form'),
+  connectionTransport: document.querySelector('#connection-transport'),
+  directConnectionFields: document.querySelector('#direct-connection-fields'),
+  sshConnectionFields: document.querySelector('#ssh-connection-fields'),
   serverUrl: document.querySelector('#server-url'),
+  sshHost: document.querySelector('#ssh-host'),
+  sshPort: document.querySelector('#ssh-port'),
+  sshUsername: document.querySelector('#ssh-username'),
+  sshAuthMethod: document.querySelector('#ssh-auth-method'),
+  sshPassword: document.querySelector('#ssh-password'),
+  sshPrivateKey: document.querySelector('#ssh-private-key'),
+  sshKeyPassphrase: document.querySelector('#ssh-key-passphrase'),
+  sshRemotePort: document.querySelector('#ssh-remote-port'),
+  sshPasswordField: document.querySelector('#ssh-password-field'),
+  sshPrivateKeyFields: document.querySelector('#ssh-private-key-fields'),
+  sshJumpEnabled: document.querySelector('#ssh-jump-enabled'),
+  sshJumpFields: document.querySelector('#ssh-jump-fields'),
+  sshJumpHost: document.querySelector('#ssh-jump-host'),
+  sshJumpPort: document.querySelector('#ssh-jump-port'),
+  sshJumpUsername: document.querySelector('#ssh-jump-username'),
+  sshJumpAuthMethod: document.querySelector('#ssh-jump-auth-method'),
+  sshJumpPassword: document.querySelector('#ssh-jump-password'),
+  sshJumpPrivateKey: document.querySelector('#ssh-jump-private-key'),
+  sshJumpKeyPassphrase: document.querySelector('#ssh-jump-key-passphrase'),
+  sshJumpPasswordField: document.querySelector('#ssh-jump-password-field'),
+  sshJumpPrivateKeyFields: document.querySelector('#ssh-jump-private-key-fields'),
   accessToken: document.querySelector('#access-token'),
   toggleToken: document.querySelector('#toggle-token'),
   connectButton: document.querySelector('#connect-button'),
@@ -162,6 +195,7 @@ let remoteHandleDrag = null;
 let suppressRemoteHandleClick = false;
 let switchingTarget = '';
 let renamingServerUrl = '';
+let selectedSshProfileId = '';
 let currentErrorKey = '';
 let initializationSettled = false;
 let nativeViewportHeight = normalizeNativeViewportHeight(
@@ -176,7 +210,9 @@ let credentialMutationQueue = Promise.resolve();
 let shellSessionToken = '';
 let credentialHydrationGeneration = 0;
 let lateCredentialRecoveryStarted = false;
+let lateCredentialRecoveryAttempts = 0;
 let exitRequested = false;
+let sshStopPromise = Promise.resolve();
 
 function authDebug(event, details = {}) {
   console.info('[pocketmux-auth]', event, details);
@@ -192,12 +228,207 @@ function setError(message = '') {
 }
 
 function localizedError(error) {
-  return text(errorMessageKey(error));
+  const raw = String(error?.message || error || '');
+  const key = errorMessageKey(new Error(raw.split(':', 2)[0]));
+  return text(key).replace('{fingerprint}', raw.split(':').slice(1).join(':'));
 }
 
 function setLocalizedError(error) {
-  currentErrorKey = errorMessageKey(error);
-  elements.error.textContent = text(currentErrorKey);
+  const raw = String(error?.message || error || '');
+  currentErrorKey = errorMessageKey(new Error(raw.split(':', 2)[0]));
+  elements.error.textContent = text(currentErrorKey)
+    .replace('{fingerprint}', raw.split(':').slice(1).join(':'));
+}
+
+function isSshProfile(profile) {
+  return profile?.transport === 'ssh' && typeof profile.serverUrl === 'string';
+}
+
+function profileForServer(serverUrl) {
+  return connectionProfiles.find((profile) => profile.serverUrl === serverUrl);
+}
+
+function restorableConnectionCandidate() {
+  for (const profile of connectionProfiles) {
+    const token = String(connectionTokens.get(profile.serverUrl) || '').trim();
+    if (token) return { profile, token };
+  }
+  return null;
+}
+
+function runtimeServerUrl(connection) {
+  return connection?.runtimeServerUrl || connection?.serverUrl || '';
+}
+
+function createProfileId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID().replace(/-/g, '');
+  const bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function sshProfileEndpointMatches(profile, {
+  host,
+  port,
+  username,
+  authMethod,
+  remotePort,
+  jumpEnabled,
+  jumpHost,
+  jumpPort,
+  jumpUsername,
+  jumpAuthMethod,
+} = {}) {
+  if (!isSshProfile(profile) || !profile.ssh) return false;
+  const jump = profile.ssh.jump || null;
+  return profile.ssh.host === host
+    && profile.ssh.port === port
+    && profile.ssh.username === username
+    && profile.ssh.authMethod === authMethod
+    && profile.ssh.remotePort === remotePort
+    && Boolean(jump) === jumpEnabled
+    && (!jumpEnabled || (
+      jump.host === jumpHost
+      && jump.port === jumpPort
+      && jump.username === jumpUsername
+      && jump.authMethod === jumpAuthMethod
+    ));
+}
+
+function sshProfileFromForm(existing = null) {
+  const host = elements.sshHost.value.trim();
+  const username = elements.sshUsername.value.trim();
+  const port = Number(elements.sshPort.value || 22);
+  const remotePort = Number(elements.sshRemotePort.value || 3789);
+  const jumpEnabled = Boolean(elements.sshJumpEnabled?.checked);
+  const jumpHost = elements.sshJumpHost?.value.trim() || '';
+  const jumpUsername = elements.sshJumpUsername?.value.trim() || '';
+  const jumpPort = Number(elements.sshJumpPort?.value || 22);
+  const jumpAuthMethod = elements.sshJumpAuthMethod?.value === 'privateKey'
+    ? 'privateKey'
+    : 'password';
+  if (!host || !username || !Number.isInteger(port) || port < 1 || port > 65535
+    || !Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) {
+    throw new Error('ssh-invalid-config');
+  }
+  if (jumpEnabled && (!jumpHost || !jumpUsername || !Number.isInteger(jumpPort)
+    || jumpPort < 1 || jumpPort > 65535)) {
+    throw new Error('ssh-jump-invalid-config');
+  }
+  const authMethod = elements.sshAuthMethod.value === 'privateKey' ? 'privateKey' : 'password';
+  // A launcher form can be filled manually after an error or a fresh app
+  // start, when selectedSshProfileId is empty. Reuse the matching saved
+  // profile instead of generating a new ID and orphaning its keyring secrets.
+  const matchedExisting = existing || connectionProfiles.find((profile) => sshProfileEndpointMatches(profile, {
+    host,
+    port,
+    username,
+    authMethod,
+    remotePort,
+    jumpEnabled,
+    jumpHost,
+    jumpPort,
+    jumpUsername,
+    jumpAuthMethod,
+  }));
+  const existingJump = matchedExisting?.ssh?.jump;
+  const sameJump = jumpEnabled
+    && existingJump
+    && existingJump.host === jumpHost
+    && existingJump.port === jumpPort
+    && existingJump.username === jumpUsername
+    && existingJump.authMethod === jumpAuthMethod;
+  const sameEndpoint = sshProfileEndpointMatches(matchedExisting, {
+    host,
+    port,
+    username,
+    authMethod,
+    remotePort,
+    jumpEnabled,
+    jumpHost,
+    jumpPort,
+    jumpUsername,
+    jumpAuthMethod,
+  }) && (!jumpEnabled || sameJump);
+  const id = sameEndpoint ? matchedExisting.id : createProfileId();
+  const jump = jumpEnabled ? {
+    host: jumpHost,
+    port: jumpPort,
+    username: jumpUsername,
+    authMethod: jumpAuthMethod,
+    hostKeyFingerprint: sameJump ? existingJump.hostKeyFingerprint : '',
+  } : null;
+  return {
+    id,
+    transport: 'ssh',
+    serverUrl: `ssh://${id}/`,
+    ...(matchedExisting?.name ? { name: matchedExisting.name } : {}),
+    ssh: {
+      host,
+      port,
+      username,
+      authMethod,
+      remoteHost: '127.0.0.1',
+      remotePort,
+      hostKeyFingerprint: sameEndpoint ? matchedExisting.ssh.hostKeyFingerprint : '',
+      ...(jump ? { jump } : {}),
+    },
+  };
+}
+
+function sshCredentialsFromForm() {
+  return {
+    password: elements.sshPassword.value,
+    privateKey: elements.sshPrivateKey.value,
+    keyPassphrase: elements.sshKeyPassphrase.value,
+    jumpPassword: elements.sshJumpPassword?.value || '',
+    jumpPrivateKey: elements.sshJumpPrivateKey?.value || '',
+    jumpKeyPassphrase: elements.sshJumpKeyPassphrase?.value || '',
+  };
+}
+
+function setSshFormVisibility() {
+  const ssh = elements.connectionTransport.value === 'ssh';
+  elements.directConnectionFields.classList.toggle('is-hidden', ssh);
+  elements.sshConnectionFields.classList.toggle('is-hidden', !ssh);
+  const privateKey = ssh && elements.sshAuthMethod.value === 'privateKey';
+  elements.sshPasswordField.classList.toggle('is-hidden', !ssh || privateKey);
+  elements.sshPrivateKeyFields.classList.toggle('is-hidden', !privateKey);
+  const jumpEnabled = ssh && Boolean(elements.sshJumpEnabled?.checked);
+  const jumpPrivateKey = jumpEnabled && elements.sshJumpAuthMethod?.value === 'privateKey';
+  elements.sshJumpFields?.classList.toggle('is-hidden', !jumpEnabled);
+  elements.sshJumpPasswordField?.classList.toggle('is-hidden', !jumpEnabled || jumpPrivateKey);
+  elements.sshJumpPrivateKeyFields?.classList.toggle('is-hidden', !jumpPrivateKey);
+  elements.serverUrl.required = !ssh;
+  renderSecurityWarning();
+}
+
+function loadSshProfileIntoForm(profile) {
+  if (!isSshProfile(profile)) return;
+  selectedSshProfileId = profile.id;
+  elements.connectionTransport.value = 'ssh';
+  elements.sshHost.value = profile.ssh.host;
+  elements.sshPort.value = String(profile.ssh.port);
+  elements.sshUsername.value = profile.ssh.username;
+  elements.sshAuthMethod.value = profile.ssh.authMethod;
+  elements.sshRemotePort.value = String(profile.ssh.remotePort);
+  elements.sshPassword.value = '';
+  elements.sshPrivateKey.value = '';
+  elements.sshKeyPassphrase.value = '';
+  const jump = profile.ssh.jump || null;
+  if (elements.sshJumpEnabled) elements.sshJumpEnabled.checked = Boolean(jump);
+  if (elements.sshJumpHost) elements.sshJumpHost.value = jump?.host || '';
+  if (elements.sshJumpPort) elements.sshJumpPort.value = String(jump?.port || 22);
+  if (elements.sshJumpUsername) elements.sshJumpUsername.value = jump?.username || '';
+  if (elements.sshJumpAuthMethod) elements.sshJumpAuthMethod.value = jump?.authMethod || 'password';
+  if (elements.sshJumpPassword) elements.sshJumpPassword.value = '';
+  if (elements.sshJumpPrivateKey) elements.sshJumpPrivateKey.value = '';
+  if (elements.sshJumpKeyPassphrase) elements.sshJumpKeyPassphrase.value = '';
+  setSshFormVisibility();
+}
+
+function profileForConnection(connection) {
+  return connection?.profile || profileForServer(connection?.serverUrl);
 }
 
 function buildRemoteConnection(serverInput, tokenInput = '') {
@@ -210,12 +441,43 @@ function buildRemoteConnection(serverInput, tokenInput = '') {
   return Object.freeze({ ...connection, targetUrl: targetUrl.toString() });
 }
 
-function profileForServer(serverUrl) {
-  return connectionProfiles.find((profile) => profile.serverUrl === serverUrl);
+function buildSshRuntimeConnection(profile, localUrl, tokenInput = '') {
+  if (!isSshProfile(profile)) throw new Error('ssh-invalid-config');
+  const runtime = buildConnection(localUrl, tokenInput, { allowPrivateHttp: true });
+  if (new URL(runtime.serverUrl).hostname !== '127.0.0.1') {
+    throw new Error('ssh-invalid-endpoint');
+  }
+  const targetUrl = new URL(runtime.targetUrl);
+  targetUrl.searchParams.set('native', '1');
+  return Object.freeze({
+    ...runtime,
+    serverUrl: profile.serverUrl,
+    runtimeServerUrl: runtime.serverUrl,
+    targetUrl: targetUrl.toString(),
+    profile,
+    isSsh: true,
+  });
 }
 
 function connectionLabel(serverUrl) {
-  return profileForServer(serverUrl)?.name || new URL(serverUrl).host;
+  const profile = profileForServer(serverUrl);
+  if (isSshProfile(profile)) {
+    return profile.name || `${profile.ssh.username}@${profile.ssh.host}:${profile.ssh.port}`;
+  }
+  try {
+    return profile?.name || new URL(serverUrl).host;
+  } catch {
+    return profile?.name || serverUrl;
+  }
+}
+
+function sshRouteLabel(profile) {
+  if (!isSshProfile(profile)) return '';
+  const target = `${profile.ssh.username}@${profile.ssh.host}:${profile.ssh.port}`;
+  const jump = profile.ssh.jump
+    ? `${profile.ssh.jump.username}@${profile.ssh.jump.host}:${profile.ssh.jump.port} → `
+    : '';
+  return `${jump}${target} → 127.0.0.1:${profile.ssh.remotePort}`;
 }
 
 function rebuildAuthenticatedTargets() {
@@ -223,6 +485,7 @@ function rebuildAuthenticatedTargets() {
   for (const profile of connectionProfiles) {
     const token = connectionTokens.get(profile.serverUrl) || '';
     if (!token) continue;
+    if (isSshProfile(profile)) continue;
     try {
       const connection = requireAccessToken(buildRemoteConnection(profile.serverUrl, token));
       authenticatedTargets.set(connection.serverUrl, connection.targetUrl);
@@ -232,14 +495,7 @@ function rebuildAuthenticatedTargets() {
   }
   for (const attempt of connectionAttempts.values()) {
     if (!attempt.authenticated || !connectionValidations.isCurrent(attempt.validationAttempt)) continue;
-    try {
-      const connection = requireAccessToken(
-        buildRemoteConnection(attempt.connection.serverUrl, attempt.connection.token),
-      );
-      authenticatedTargets.set(connection.serverUrl, connection.targetUrl);
-    } catch {
-      // Keep malformed or platform-incompatible active attempts out of direct switching.
-    }
+    authenticatedTargets.set(attempt.connection.serverUrl, attempt.connection.targetUrl);
   }
 }
 
@@ -255,11 +511,12 @@ function persistConnectionProfiles() {
 }
 
 function rememberConnectionMetadata(connection) {
+  const profile = profileForConnection(connection);
   const remembered = rememberConnectionProfile(
     null,
     CONNECTION_PROFILES_KEY,
     connectionProfiles,
-    { serverUrl: connection.serverUrl },
+    profile || { serverUrl: connection.serverUrl },
   );
   connectionProfiles = remembered.connectionProfiles;
   recentServers = connectionProfiles.map((profile) => profile.serverUrl);
@@ -279,6 +536,17 @@ function nativeInvoke() {
     ...arguments_,
     sessionToken: shellSessionToken,
   });
+}
+
+async function nativeCredentialInvokeWithRetry() {
+  for (let attempt = 0; attempt < NATIVE_BRIDGE_RETRY_ATTEMPTS; attempt += 1) {
+    const invoke = await nativeCredentialInvoke();
+    if (invoke) return invoke;
+    if (attempt + 1 < NATIVE_BRIDGE_RETRY_ATTEMPTS) {
+      await new Promise((resolve) => window.setTimeout(resolve, NATIVE_BRIDGE_RETRY_DELAY_MS));
+    }
+  }
+  return null;
 }
 
 function createShellSessionToken() {
@@ -318,7 +586,7 @@ async function storeConnectionToken(connection, { isCurrent = () => true } = {})
       authDebug('write-skipped-stale', { serverUrl: connection.serverUrl });
       return false;
     }
-    const invoke = await nativeCredentialInvoke();
+    const invoke = await nativeCredentialInvokeWithRetry();
     if (!invoke) {
       authDebug('write-skipped-native-unavailable', { serverUrl: connection.serverUrl });
       return false;
@@ -434,7 +702,7 @@ async function storeLegacyConnectionToken(connection) {
     );
     if (!profileForServer(connection.serverUrl) || !pendingLegacyToken) return true;
     if (connectionTokens.has(connection.serverUrl)) return true;
-    const invoke = await nativeCredentialInvoke();
+    const invoke = await nativeCredentialInvokeWithRetry();
     if (!invoke) throw new Error('credential-store-unavailable');
     await invoke('set_connection_token', {
       serverUrl: connection.serverUrl,
@@ -448,7 +716,7 @@ async function storeLegacyConnectionToken(connection) {
 
 async function forgetRejectedToken(connection) {
   return queueCredentialMutation(async () => {
-    const invoke = await nativeCredentialInvoke();
+    const invoke = await nativeCredentialInvokeWithRetry();
     return rejectCredential({
       expectedToken: connection.token,
       currentToken: connectionTokens.get(connection.serverUrl),
@@ -473,7 +741,7 @@ async function forgetRejectedToken(connection) {
 
 async function deleteConnectionToken(serverUrl) {
   return queueCredentialMutation(async () => {
-    const invoke = await nativeCredentialInvoke();
+    const invoke = await nativeCredentialInvokeWithRetry();
     if (!invoke) return false;
     try {
       await invoke('delete_connection_token', { serverUrl });
@@ -488,7 +756,7 @@ async function deleteConnectionToken(serverUrl) {
 
 async function hydrateConnectionTokens() {
   return queueCredentialMutation(async () => {
-    const invoke = await nativeCredentialInvoke();
+    const invoke = await nativeCredentialInvokeWithRetry();
     if (!invoke) {
       authDebug('read-skipped-native-unavailable');
       return { complete: false, states: new Map() };
@@ -501,6 +769,7 @@ async function hydrateConnectionTokens() {
     const hydrationGeneration = ++credentialHydrationGeneration;
     const hydrationOperation = connectionOperations.current();
     let retryScheduled = false;
+    let readAttempt = 1;
     const applyResults = (results, event = 'read-complete') => {
       const states = mergeCredentialReadResults(connectionTokens, serverUrls, results);
       rebuildAuthenticatedTargets();
@@ -517,45 +786,71 @@ async function hydrateConnectionTokens() {
       if (
         hydrationGeneration !== credentialHydrationGeneration
         || !initializationSettled
-        || !connectionOperations.isCurrent(hydrationOperation)
         || !elements.remoteShell.classList.contains('is-hidden')
         || lateCredentialRecoveryStarted
+        || lateCredentialRecoveryAttempts >= LATE_CREDENTIAL_RECOVERY_MAX_ATTEMPTS
       ) return;
-      const profile = connectionProfiles[0];
-      if (!profile || !connectionTokens.get(profile.serverUrl)) return;
+      const candidate = restorableConnectionCandidate();
+      if (!candidate) return;
       lateCredentialRecoveryStarted = true;
-      authDebug('read-late-restore', { serverUrl: profile.serverUrl });
-      void restoreMostRecentConnection().catch((error) => {
-        lateCredentialRecoveryStarted = false;
-        console.warn('Pocketmux late credential restore failed', error);
-      });
+      lateCredentialRecoveryAttempts += 1;
+      authDebug('read-late-restore', { serverUrl: candidate.profile.serverUrl });
+      void restoreMostRecentConnection()
+        .then((restored) => {
+          if (restored) {
+            lateCredentialRecoveryAttempts = 0;
+            return;
+          }
+          authDebug('read-late-restore-failed', {
+            serverUrl: candidate.profile.serverUrl,
+            attempt: lateCredentialRecoveryAttempts,
+          });
+          if (lateCredentialRecoveryAttempts < LATE_CREDENTIAL_RECOVERY_MAX_ATTEMPTS) {
+            window.setTimeout(() => restoreAfterLateRead(), CREDENTIAL_READ_RETRY_DELAY_MS);
+          }
+        })
+        .catch((error) => {
+          console.warn('Pocketmux late credential restore failed', error);
+          if (lateCredentialRecoveryAttempts < LATE_CREDENTIAL_RECOVERY_MAX_ATTEMPTS) {
+            window.setTimeout(() => restoreAfterLateRead(), CREDENTIAL_READ_RETRY_DELAY_MS);
+          }
+        })
+        .finally(() => {
+          lateCredentialRecoveryStarted = false;
+        });
     };
     const scheduleReadRetry = () => {
-      if (retryScheduled) return;
+      if (retryScheduled || readAttempt >= CREDENTIAL_READ_MAX_ATTEMPTS) return;
       retryScheduled = true;
+      readAttempt += 1;
+      const attempt = readAttempt;
       window.setTimeout(() => {
+        retryScheduled = false;
         if (
           hydrationGeneration !== credentialHydrationGeneration
           || !connectionOperations.isCurrent(hydrationOperation)
         ) return;
-        authDebug('read-retry-start', { servers: serverUrls.length });
+        authDebug('read-retry-start', { servers: serverUrls.length, attempt });
         const retryPromise = invoke('get_connection_tokens', { serverUrls });
         void withCredentialReadTimeout(retryPromise, CREDENTIAL_READ_TIMEOUT_MS, {
           onLateValue: (results) => {
             if (hydrationGeneration !== credentialHydrationGeneration) return;
             const states = applyResults(results, 'read-retry-late-complete');
             restoreAfterLateRead();
-            if ([...states.values()].includes('unknown')) authDebug('read-retry-remains-unknown');
+            if (shouldRetryCredentialRead(states)) scheduleReadRetry();
           },
           onLateError: (error) => {
             authDebug('read-retry-late-failed', { error: String(error) });
+            scheduleReadRetry();
           },
         }).then((results) => {
           const states = applyResults(results, 'read-retry-complete');
           restoreAfterLateRead();
+          if (shouldRetryCredentialRead(states)) scheduleReadRetry();
           return states;
         }).catch((error) => {
           authDebug('read-retry-failed', { error: String(error) });
+          scheduleReadRetry();
         });
       }, CREDENTIAL_READ_RETRY_DELAY_MS);
     };
@@ -569,7 +864,7 @@ async function hydrateConnectionTokens() {
             if (hydrationGeneration !== credentialHydrationGeneration) return;
             const states = applyResults(results, 'read-late-complete');
             restoreAfterLateRead();
-            if ([...states.values()].includes('unknown')) scheduleReadRetry();
+            if (shouldRetryCredentialRead(states)) scheduleReadRetry();
           },
           onLateError: (error) => {
             authDebug('read-late-failed', { error: String(error) });
@@ -578,13 +873,13 @@ async function hydrateConnectionTokens() {
         },
       );
       const states = applyResults(results);
-      if ([...states.values()].includes('unknown')) scheduleReadRetry();
+      if (shouldRetryCredentialRead(states)) scheduleReadRetry();
       return { complete: ![...states.values()].includes('unknown'), states };
     } catch (error) {
       authDebug('read-failed', { error: String(error) });
       const timedOut = error?.message === 'credential-read-timeout';
       if (timedOut) authDebug('read-timeout-late-result-retained');
-      if (!timedOut) scheduleReadRetry();
+      scheduleReadRetry();
       return {
         complete: false,
         states: new Map(serverUrls.map((serverUrl) => [serverUrl, 'unknown'])),
@@ -656,11 +951,11 @@ async function migrateLegacyConnectionTokens(existingCredentialStates) {
 }
 
 async function validateSavedToken(connection) {
-  const invoke = await nativeCredentialInvoke();
+  const invoke = await nativeCredentialInvokeWithRetry();
   if (!invoke) return 'unknown';
   try {
     return await invoke('validate_token', {
-      serverUrl: connection.serverUrl,
+      serverUrl: runtimeServerUrl(connection),
       token: connection.token,
     });
   } catch {
@@ -718,7 +1013,7 @@ function setLanguage(nextLanguage) {
 function connectionAttemptForMessage(event) {
   for (const attempt of connectionAttempts.values()) {
     if (attempt.frameWindow !== event.source) continue;
-    if (event.origin !== new URL(attempt.connection.serverUrl).origin) continue;
+    if (event.origin !== new URL(runtimeServerUrl(attempt.connection)).origin) continue;
     return attempt;
   }
   return null;
@@ -833,7 +1128,7 @@ function receiveRemoteLanguage(event) {
 
   if (event.data?.type === REMOTE_LANGUAGE_MESSAGE_TYPE) {
     if (!remoteSession || event.source !== elements.remoteFrame.contentWindow) return;
-    if (event.origin !== new URL(remoteSession.serverUrl).origin) return;
+    if (event.origin !== new URL(remoteSession.transportServerUrl || remoteSession.serverUrl).origin) return;
     if (event.data.language !== 'zh' && event.data.language !== 'en') return;
     setLanguage(event.data.language);
     return;
@@ -863,6 +1158,11 @@ function receiveRemoteLanguage(event) {
 }
 
 function renderSecurityWarning() {
+  if (elements.connectionTransport.value === 'ssh') {
+    elements.warning.classList.add('is-hidden');
+    elements.warning.textContent = '';
+    return;
+  }
   let connection;
   try {
     connection = buildRemoteConnection(elements.serverUrl.value, elements.accessToken.value);
@@ -1047,7 +1347,7 @@ function keepFocusInRemoteDrawer(event) {
 function openConnectionNameDialog(serverUrl) {
   const profile = profileForServer(serverUrl);
   renamingServerUrl = serverUrl;
-  elements.connectionNameServer.textContent = new URL(serverUrl).host;
+  elements.connectionNameServer.textContent = connectionLabel(serverUrl);
   elements.connectionName.value = profile?.name || '';
   try {
     elements.connectionNameDialog.showModal();
@@ -1094,8 +1394,11 @@ function connectionButton(serverUrl) {
   if (isCurrent) button.setAttribute('aria-current', 'true');
 
   const name = document.createElement('strong');
-  const host = new URL(serverUrl).host;
-  const customName = profileForServer(serverUrl)?.name;
+  const profile = profileForServer(serverUrl);
+  const host = isSshProfile(profile)
+    ? sshRouteLabel(profile)
+    : new URL(serverUrl).host;
+  const customName = profile?.name;
   name.textContent = customName || host;
   const hint = document.createElement('span');
   const stateHint = isCurrent
@@ -1163,11 +1466,22 @@ function setRemoteState(nextState, operation = connectionOperations.current()) {
 function showRemote(
   serverUrl,
   targetUrl,
-  { operation = connectionOperations.begin(), pushHistory = true, storageWarning = false } = {},
+  {
+    operation = connectionOperations.begin(),
+    pushHistory = true,
+    storageWarning = false,
+    transportServerUrl = serverUrl,
+    profile = null,
+  } = {},
 ) {
   clearRemoteLoadTimer();
   clearRemoteRevealTimer();
-  remoteSession = beginRemoteSession(serverUrl, targetUrl, storageWarning);
+  remoteSession = beginRemoteSession(
+    serverUrl,
+    targetUrl,
+    storageWarning,
+    { transportServerUrl, profile },
+  );
   switchingTarget = '';
   elements.launcher.classList.add('is-hidden');
   elements.footer.classList.add('is-hidden');
@@ -1199,7 +1513,14 @@ function showRemote(
   return operation;
 }
 
-function showConnections({ serverUrl, message = '', focusToken = false } = {}) {
+function showConnections({
+  serverUrl,
+  message = '',
+  focusToken = false,
+  focusSsh = false,
+  focusJump = false,
+} = {}) {
+  if (isSshProfile(remoteSession?.profile)) void stopSshTunnel();
   connectionOperations.begin();
   clearRemoteLoadTimer();
   clearRemoteRevealTimer();
@@ -1212,11 +1533,35 @@ function showConnections({ serverUrl, message = '', focusToken = false } = {}) {
   applyRemoteViewportHeight();
   elements.connectButton.disabled = false;
   elements.connectButton.classList.remove('is-loading');
-  if (serverUrl !== undefined) elements.serverUrl.value = serverUrl;
+  if (serverUrl !== undefined) {
+    const profile = profileForServer(serverUrl);
+    if (isSshProfile(profile)) {
+      loadSshProfileIntoForm(profile);
+    } else {
+      elements.connectionTransport.value = 'direct';
+      elements.serverUrl.value = serverUrl;
+      setSshFormVisibility();
+    }
+  } else {
+    elements.connectionTransport.value = 'direct';
+    selectedSshProfileId = '';
+    elements.serverUrl.value = '';
+    setSshFormVisibility();
+  }
   elements.accessToken.value = '';
   setError(message);
   renderSecurityWarning();
-  requestAnimationFrame(() => (focusToken ? elements.accessToken : elements.serverUrl).focus());
+  requestAnimationFrame(() => {
+    if (focusToken) elements.accessToken.focus();
+    else if (focusJump && elements.connectionTransport.value === 'ssh') {
+      const privateKey = elements.sshJumpAuthMethod?.value === 'privateKey';
+      (privateKey ? elements.sshJumpPrivateKey : elements.sshJumpPassword)?.focus();
+    } else if (focusSsh && elements.connectionTransport.value === 'ssh') {
+      const privateKey = elements.sshAuthMethod.value === 'privateKey';
+      (privateKey ? elements.sshPrivateKey : elements.sshPassword).focus();
+    } else if (elements.connectionTransport.value === 'ssh') elements.sshHost.focus();
+    else elements.serverUrl.focus();
+  });
 }
 
 async function monitorConnectionValidation(
@@ -1270,25 +1615,283 @@ async function monitorConnectionValidation(
   return validation;
 }
 
-async function navigateToServer(serverInput, tokenInput = '', { pushHistory = true } = {}) {
+function sshErrorText(error) {
+  return String(error?.message || error || 'ssh-unavailable');
+}
+
+function recoveryFocusForError(error) {
+  const raw = sshErrorText(error);
+  return {
+    focusToken: raw === 'missing-token',
+    focusSsh: raw === 'ssh-password-required' || raw === 'ssh-private-key-required',
+    focusJump: raw === 'ssh-jump-password-required' || raw === 'ssh-jump-private-key-required',
+  };
+}
+
+async function resolveSshCredentials(profile, provided = {}) {
+  const invoke = await nativeCredentialInvokeWithRetry();
+  if (!invoke) throw new Error('ssh-secret-unavailable');
+  const readSecret = async (kind, value, { required = false, jump = false } = {}) => {
+    const privateKeyKind = kind === 'privateKey' || kind === 'jumpPrivateKey';
+    if (value && (!privateKeyKind || value.trim())) return value;
+    let stored;
+    let readSucceeded = false;
+    for (let attempt = 0; attempt < SSH_SECRET_READ_RETRIES; attempt += 1) {
+      try {
+        stored = await invoke('get_ssh_secret', { profileId: profile.id, kind });
+        readSucceeded = true;
+        if (stored && (!privateKeyKind || stored.trim())) return stored;
+        // Android Keystore may report an empty value during cold-start
+        // initialization. Treat it like a transient read, not a permanent
+        // missing credential, and give the next attempt a chance to succeed.
+        if (attempt + 1 < SSH_SECRET_READ_RETRIES) {
+          await new Promise((resolve) => window.setTimeout(resolve, SSH_SECRET_READ_RETRY_DELAY_MS));
+        }
+        continue;
+      } catch {
+        if (attempt + 1 < SSH_SECRET_READ_RETRIES) {
+          await new Promise((resolve) => window.setTimeout(resolve, SSH_SECRET_READ_RETRY_DELAY_MS));
+        }
+      }
+    }
+    if (!readSucceeded) {
+      throw new Error('ssh-secret-unavailable');
+    }
+    if (stored && (!privateKeyKind || stored.trim())) return stored;
+    if (required) {
+      const prefix = jump ? 'ssh-jump-' : 'ssh-';
+      const passwordKind = kind === 'password' || kind === 'jumpPassword';
+      throw new Error(`${prefix}${passwordKind ? 'password-required' : 'private-key-required'}`);
+    }
+    return '';
+  };
+  const resolveSide = async (side, credentials, jump = false) => {
+    const prefix = jump ? 'jump' : '';
+    const authMethod = side.authMethod;
+    if (authMethod === 'password') {
+      return {
+        password: await readSecret(prefix ? 'jumpPassword' : 'password', credentials?.password, {
+          required: true,
+          jump,
+        }),
+        privateKey: null,
+        keyPassphrase: null,
+      };
+    }
+    return {
+      password: null,
+      privateKey: await readSecret(prefix ? 'jumpPrivateKey' : 'privateKey', credentials?.privateKey, {
+        required: true,
+        jump,
+      }),
+      keyPassphrase: await readSecret(prefix ? 'jumpKeyPassphrase' : 'keyPassphrase', credentials?.keyPassphrase, { jump }),
+    };
+  };
+  const target = await resolveSide(profile.ssh, {
+    password: provided.password,
+    privateKey: provided.privateKey,
+    keyPassphrase: provided.keyPassphrase,
+  });
+  const jump = profile.ssh.jump
+    ? await resolveSide(profile.ssh.jump, {
+      password: provided.jumpPassword,
+      privateKey: provided.jumpPrivateKey,
+      keyPassphrase: provided.jumpKeyPassphrase,
+    }, true)
+    : null;
+  return {
+    invoke,
+    ...target,
+    jumpPassword: jump?.password || null,
+    jumpPrivateKey: jump?.privateKey || null,
+    jumpKeyPassphrase: jump?.keyPassphrase || null,
+  };
+}
+
+async function stopSshTunnel() {
+  const previousStop = sshStopPromise;
+  const stop = previousStop.then(async () => {
+    try {
+      const invoke = await nativeCredentialInvokeWithRetry();
+      await invoke?.('stop_ssh_tunnel');
+    } catch {
+      // A stale or already-closed tunnel is harmless. The next SSH connection
+      // replaces the native manager state before exposing its local endpoint.
+    }
+  });
+  sshStopPromise = stop.catch(() => undefined);
+  return stop;
+}
+
+async function establishSshTunnel(profile, providedCredentials = {}) {
+  let trustedProfile = profile;
+  const credentials = await resolveSshCredentials(profile, providedCredentials);
+  let result;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      result = await credentials.invoke('start_ssh_tunnel', {
+        host: trustedProfile.ssh.host,
+        port: trustedProfile.ssh.port,
+        username: trustedProfile.ssh.username,
+        authMethod: trustedProfile.ssh.authMethod,
+        password: credentials.password,
+        privateKey: credentials.privateKey,
+        keyPassphrase: credentials.keyPassphrase,
+        remoteHost: '127.0.0.1',
+        remotePort: trustedProfile.ssh.remotePort,
+        jump: trustedProfile.ssh.jump
+          ? {
+            host: trustedProfile.ssh.jump.host,
+            port: trustedProfile.ssh.jump.port,
+            username: trustedProfile.ssh.jump.username,
+            authMethod: trustedProfile.ssh.jump.authMethod,
+            password: credentials.jumpPassword,
+            privateKey: credentials.jumpPrivateKey,
+            keyPassphrase: credentials.jumpKeyPassphrase,
+            hostKeyFingerprint: trustedProfile.ssh.jump.hostKeyFingerprint || null,
+          }
+          : null,
+        localPort: null,
+        hostKeyFingerprint: trustedProfile.ssh.hostKeyFingerprint || null,
+      });
+      break;
+    } catch (error) {
+      const raw = sshErrorText(error);
+      const trustCases = [
+        { prefix: 'ssh-jump-host-key-untrusted:', field: 'jump', promptKey: 'error.sshJumpHostKeyTrust' },
+        { prefix: 'ssh-target-host-key-untrusted:', field: 'target', promptKey: 'error.sshHostKeyTrust' },
+        { prefix: 'ssh-host-key-untrusted:', field: 'target', promptKey: 'error.sshHostKeyTrust' },
+      ];
+      const trustCase = trustCases.find(({ prefix }) => raw.startsWith(prefix));
+      if (trustCase) {
+        const fingerprint = raw.slice(trustCase.prefix.length);
+        const currentFingerprint = trustCase.field === 'jump'
+          ? trustedProfile.ssh.jump?.hostKeyFingerprint
+          : trustedProfile.ssh.hostKeyFingerprint;
+        const prompt = text(trustCase.promptKey).replace('{fingerprint}', fingerprint);
+        if (typeof globalThis.confirm !== 'function' || !globalThis.confirm(prompt)) {
+          throw new Error(raw);
+        }
+        trustedProfile = trustCase.field === 'jump'
+          ? {
+            ...trustedProfile,
+            ssh: {
+              ...trustedProfile.ssh,
+              jump: { ...trustedProfile.ssh.jump, hostKeyFingerprint: fingerprint },
+            },
+          }
+          : {
+            ...trustedProfile,
+            ssh: { ...trustedProfile.ssh, hostKeyFingerprint: fingerprint },
+          };
+        if (currentFingerprint === fingerprint) throw new Error(raw);
+        continue;
+      }
+      if (raw.startsWith('ssh-host-key-mismatch:')
+        || raw.startsWith('ssh-target-host-key-mismatch:')
+        || raw.startsWith('ssh-jump-host-key-mismatch:')) {
+        throw new Error(raw);
+      }
+      throw new Error(raw);
+    }
+  }
+  if (!result?.localUrl) throw new Error('ssh-unavailable');
+
+  const providedSecret = (kind) => {
+    const value = providedCredentials?.[kind];
+    return typeof value === 'string' && value.trim().length > 0;
+  };
+  const persistSecret = async (kind, secret) => {
+    // Secrets read from the keyring are already durable. Only write values
+    // entered in the form; this keeps reconnects from needlessly touching the
+    // Android keystore and makes a failed first write visible to the user.
+    if (!secret || !providedSecret(kind)) return;
+    let persisted = false;
+    for (let attempt = 0; attempt < SSH_SECRET_WRITE_RETRIES; attempt += 1) {
+      try {
+        await credentials.invoke('set_ssh_secret', {
+          profileId: trustedProfile.id,
+          kind,
+          secret,
+        });
+        persisted = true;
+        break;
+      } catch {
+        if (attempt + 1 < SSH_SECRET_WRITE_RETRIES) {
+          await new Promise((resolve) => window.setTimeout(resolve, SSH_SECRET_WRITE_RETRY_DELAY_MS));
+        }
+      }
+    }
+    if (!persisted) throw new Error('ssh-secret-persistence-failed');
+  };
+  try {
+    if (trustedProfile.ssh.authMethod === 'password') {
+      await persistSecret('password', credentials.password);
+    } else {
+      await persistSecret('privateKey', credentials.privateKey);
+      await persistSecret('keyPassphrase', credentials.keyPassphrase);
+    }
+    if (trustedProfile.ssh.jump) {
+      if (trustedProfile.ssh.jump.authMethod === 'password') {
+        await persistSecret('jumpPassword', credentials.jumpPassword);
+      } else {
+        await persistSecret('jumpPrivateKey', credentials.jumpPrivateKey);
+        await persistSecret('jumpKeyPassphrase', credentials.jumpKeyPassphrase);
+      }
+    }
+  } catch (error) {
+    await stopSshTunnel();
+    throw error;
+  }
+  const persistedProfile = {
+    ...trustedProfile,
+    ssh: {
+      ...trustedProfile.ssh,
+      hostKeyFingerprint: result.hostKeyFingerprint || trustedProfile.ssh.hostKeyFingerprint || '',
+      ...(trustedProfile.ssh.jump ? {
+        jump: {
+          ...trustedProfile.ssh.jump,
+          hostKeyFingerprint: result.jumpHostKeyFingerprint
+            || trustedProfile.ssh.jump.hostKeyFingerprint
+            || '',
+        },
+      } : {}),
+    },
+  };
+  return { profile: persistedProfile, result, secretsPersisted: true };
+}
+
+async function navigateConnection(
+  connection,
+  {
+    operation = null,
+    pushHistory = true,
+    profile = null,
+    extraStorageWarning = false,
+  } = {},
+) {
   if (exitRequested) return false;
-  const candidate = buildRemoteConnection(serverInput, tokenInput);
-  const savedToken = connectionTokens.get(candidate.serverUrl) || '';
-  const connection = tokenInput || candidate.hasToken || !savedToken
-    ? candidate
-    : buildRemoteConnection(candidate.serverUrl, savedToken);
   requireAccessToken(connection);
-  const operation = connectionOperations.begin();
+  const navigationOperation = operation || connectionOperations.begin();
   elements.connectButton.disabled = true;
   elements.connectButton.classList.add('is-loading');
-  elements.serverUrl.value = connection.serverUrl;
+  if (isSshProfile(profile || connection.profile)) {
+    elements.connectionTransport.value = 'ssh';
+    setSshFormVisibility();
+  } else {
+    elements.connectionTransport.value = 'direct';
+    elements.serverUrl.value = connection.serverUrl;
+    setSshFormVisibility();
+  }
   elements.accessToken.value = '';
   const validationAttempt = connectionValidations.begin(connection.serverUrl);
   const isCurrent = () => (
-    connectionOperations.isCurrent(operation)
+    connectionOperations.isCurrent(navigationOperation)
     && connectionValidations.isCurrent(validationAttempt)
   );
-  const metadataPersisted = rememberConnectionMetadata(connection);
+  const metadataPersisted = rememberConnectionMetadata(
+    profile ? { ...connection, profile } : connection,
+  );
   const credentialAlreadyPersisted = connectionTokens.get(connection.serverUrl) === connection.token;
   const initialPersistence = await persistBeforeRemoteNavigation({
     metadataPersisted,
@@ -1298,16 +1901,24 @@ async function navigateToServer(serverInput, tokenInput = '', { pushHistory = tr
   });
   if (initialPersistence.cancelled) return false;
   const { credentialPersisted } = initialPersistence;
+  if (!metadataPersisted || !credentialPersisted) {
+    if (isSshProfile(profile || connection.profile)) await stopSshTunnel();
+    throw new Error(metadataPersisted
+      ? 'credential-persistence-failed'
+      : 'metadata-persistence-failed');
+  }
   renderRecentServers();
   showRemote(connection.serverUrl, connection.targetUrl, {
-    operation,
+    operation: navigationOperation,
     pushHistory,
-    storageWarning: !metadataPersisted || !credentialPersisted,
+    profile: profile || connection.profile || null,
+    transportServerUrl: runtimeServerUrl(connection),
+    storageWarning: extraStorageWarning || !metadataPersisted || !credentialPersisted,
   });
   const attempt = {
     connection,
     validationAttempt,
-    operation,
+    operation: navigationOperation,
     frameWindow: elements.remoteFrame.contentWindow,
     authentication: beginConnectionAuthentication(),
     authenticated: false,
@@ -1317,7 +1928,7 @@ async function navigateToServer(serverInput, tokenInput = '', { pushHistory = tr
   };
   connectionAttempts.set(connection.serverUrl, attempt);
   rebuildAuthenticatedTargets();
-  void monitorConnectionValidation(connection, operation, {
+  void monitorConnectionValidation(connection, navigationOperation, {
     persistOnValid: connectionTokens.get(connection.serverUrl) !== connection.token,
     validationAttempt,
     attempt,
@@ -1327,12 +1938,60 @@ async function navigateToServer(serverInput, tokenInput = '', { pushHistory = tr
   return true;
 }
 
+async function navigateToSshProfile(profile, tokenInput = '', providedCredentials = {}, { pushHistory = true } = {}) {
+  if (!isSshProfile(profile)) throw new Error('ssh-invalid-config');
+  const token = String(tokenInput || connectionTokens.get(profile.serverUrl) || '').trim();
+  if (!token) throw new Error('missing-token');
+  const operation = connectionOperations.begin();
+  await sshStopPromise;
+  if (!connectionOperations.isCurrent(operation)) return false;
+  elements.connectionTransport.value = 'ssh';
+  loadSshProfileIntoForm(profile);
+  elements.connectButton.disabled = true;
+  elements.connectButton.classList.add('is-loading');
+  const tunnel = await establishSshTunnel(profile, providedCredentials);
+  if (!connectionOperations.isCurrent(operation)) return false;
+  const connection = buildSshRuntimeConnection(tunnel.profile, tunnel.result.localUrl, token);
+  return navigateConnection(connection, {
+    operation,
+    pushHistory,
+    profile: tunnel.profile,
+    extraStorageWarning: !tunnel.secretsPersisted,
+  });
+}
+
+async function navigateToServer(serverInput, tokenInput = '', { pushHistory = true } = {}) {
+  if (exitRequested) return false;
+  const existingProfile = profileForServer(serverInput);
+  if (isSshProfile(existingProfile)) {
+    return navigateToSshProfile(existingProfile, tokenInput, {}, { pushHistory });
+  }
+  if (isSshProfile(remoteSession?.profile)) await stopSshTunnel();
+  const candidate = buildRemoteConnection(serverInput, tokenInput);
+  const savedToken = connectionTokens.get(candidate.serverUrl) || '';
+  const connection = tokenInput || candidate.hasToken || !savedToken
+    ? candidate
+    : buildRemoteConnection(candidate.serverUrl, savedToken);
+  requireAccessToken(connection);
+  return navigateConnection(connection, { pushHistory });
+}
+
 async function restoreMostRecentConnection() {
-  const profile = connectionProfiles[0];
-  const token = profile ? connectionTokens.get(profile.serverUrl) : '';
-  if (!profile || !token) return false;
+  const candidate = restorableConnectionCandidate();
+  if (!candidate) {
+    authDebug('restore-skipped-no-token', {
+      profiles: connectionProfiles.length,
+      hydratedTokens: connectionTokens.size,
+    });
+    return false;
+  }
+  const { profile, token } = candidate;
+  authDebug('restore-start', { serverUrl: profile.serverUrl });
   try {
     window.history.replaceState({ screen: 'remote' }, '', '#connected');
+    if (isSshProfile(profile)) {
+      return await navigateToSshProfile(profile, token, {}, { pushHistory: false });
+    }
     return await navigateToServer(profile.serverUrl, token, { pushHistory: false });
   } catch (error) {
     window.history.replaceState(
@@ -1340,10 +1999,14 @@ async function restoreMostRecentConnection() {
       '',
       `${window.location.pathname}${window.location.search}`,
     );
+    authDebug('restore-failed', {
+      serverUrl: profile.serverUrl,
+      error: sshErrorText(error),
+    });
     showConnections({
       serverUrl: profile.serverUrl,
       message: localizedError(error),
-      focusToken: true,
+      ...recoveryFocusForError(error),
     });
     return false;
   }
@@ -1352,6 +2015,28 @@ async function restoreMostRecentConnection() {
 async function switchConnection(serverUrl) {
   const plan = planConnectionSwitch(serverUrl, authenticatedTargets);
   if (plan.type === 'none') return;
+  const profile = profileForServer(serverUrl);
+  if (isSshProfile(profile)) {
+    const token = connectionTokens.get(serverUrl) || '';
+    if (!token) {
+      showConnections({
+        serverUrl,
+        message: text('remote.switchNeedsTokenMessage'),
+        focusToken: true,
+      });
+      return;
+    }
+    switchingTarget = serverUrl;
+    renderSwitchTargets();
+    try {
+      await navigateToSshProfile(profile, token, {}, { pushHistory: false });
+    } catch (error) {
+      switchingTarget = '';
+      renderSwitchTargets();
+      elements.remoteNotice.textContent = localizedError(error);
+    }
+    return;
+  }
   if (plan.type === 'connect') {
     switchingTarget = serverUrl;
     renderSwitchTargets();
@@ -1415,6 +2100,15 @@ async function exitNativeApp() {
 
 async function reloadRemoteConnection() {
   if (!remoteSession?.targetUrl) return;
+  if (isSshProfile(remoteSession.profile)) {
+    const token = connectionTokens.get(remoteSession.serverUrl) || '';
+    try {
+      await navigateToSshProfile(remoteSession.profile, token, {}, { pushHistory: false });
+    } catch (error) {
+      setError(localizedError(error));
+    }
+    return;
+  }
   const connection = buildRemoteConnection(remoteSession.targetUrl);
   elements.remoteNotice.textContent = text('remote.validatingToken');
   try {
@@ -1434,7 +2128,9 @@ function recentServerRow(serverUrl) {
   const name = document.createElement('strong');
   name.textContent = connectionLabel(serverUrl);
   const url = document.createElement('span');
-  url.textContent = serverUrl;
+  url.textContent = isSshProfile(profile)
+    ? sshRouteLabel(profile)
+    : serverUrl;
   details.append(name, url);
 
   const actions = document.createElement('div');
@@ -1446,8 +2142,12 @@ function recentServerRow(serverUrl) {
   openButton.addEventListener('click', async () => {
     if (!initializationSettled) connectionOperations.begin();
     setError('');
-    elements.serverUrl.value = serverUrl;
-    renderSecurityWarning();
+    if (isSshProfile(profile)) loadSshProfileIntoForm(profile);
+    else {
+      elements.connectionTransport.value = 'direct';
+      elements.serverUrl.value = serverUrl;
+      setSshFormVisibility();
+    }
     const savedToken = connectionTokens.get(serverUrl) || '';
     if (!savedToken) {
       elements.accessToken.value = '';
@@ -1455,7 +2155,11 @@ function recentServerRow(serverUrl) {
       return;
     }
     try {
-      await navigateToServer(serverUrl, savedToken);
+      if (isSshProfile(profile)) {
+        await navigateToSshProfile(profile, savedToken, sshCredentialsFromForm());
+      } else {
+        await navigateToServer(serverUrl, savedToken);
+      }
     } catch (error) {
       setError(localizedError(error));
     }
@@ -1477,6 +2181,15 @@ function recentServerRow(serverUrl) {
       return;
     }
     legacyConnectionTokens = legacyConnectionTokens.filter((item) => item.serverUrl !== serverUrl);
+    if (isSshProfile(profile)) {
+      const invoke = await nativeCredentialInvokeWithRetry();
+      try {
+        await stopSshTunnel();
+        await invoke?.('delete_ssh_secrets', { profileId: profile.id });
+      } catch {
+        // The profile is still removed locally; stale native state is harmless on next launch.
+      }
+    }
     connectionProfiles = removeConnectionProfile(connectionProfiles, serverUrl);
     if (!persistConnectionProfiles()) setError(text('error.storageUnavailable'));
     renderRecentServers();
@@ -1507,7 +2220,19 @@ elements.form.addEventListener('submit', async (event) => {
   connectionOperations.begin();
   setError('');
   try {
-    await navigateToServer(elements.serverUrl.value, elements.accessToken.value);
+    if (elements.connectionTransport.value === 'ssh') {
+      const existing = selectedSshProfileId
+        ? connectionProfiles.find((profile) => profile.id === selectedSshProfileId)
+        : null;
+      const profile = sshProfileFromForm(existing);
+      await navigateToSshProfile(
+        profile,
+        elements.accessToken.value,
+        sshCredentialsFromForm(),
+      );
+    } else {
+      await navigateToServer(elements.serverUrl.value, elements.accessToken.value);
+    }
   } catch (error) {
     elements.connectButton.disabled = false;
     elements.connectButton.classList.remove('is-loading');
@@ -1520,6 +2245,38 @@ elements.serverUrl.addEventListener('input', () => {
   setError('');
   renderSecurityWarning();
 });
+
+elements.connectionTransport.addEventListener('change', () => {
+  setError('');
+  setSshFormVisibility();
+});
+elements.sshAuthMethod.addEventListener('change', () => {
+  setError('');
+  setSshFormVisibility();
+});
+elements.sshJumpEnabled?.addEventListener('change', () => {
+  setError('');
+  setSshFormVisibility();
+});
+elements.sshJumpAuthMethod?.addEventListener('change', () => {
+  setError('');
+  setSshFormVisibility();
+});
+[
+  elements.sshHost,
+  elements.sshPort,
+  elements.sshUsername,
+  elements.sshPassword,
+  elements.sshPrivateKey,
+  elements.sshKeyPassphrase,
+  elements.sshRemotePort,
+  elements.sshJumpHost,
+  elements.sshJumpPort,
+  elements.sshJumpUsername,
+  elements.sshJumpPassword,
+  elements.sshJumpPrivateKey,
+  elements.sshJumpKeyPassphrase,
+].forEach((field) => field.addEventListener('input', () => setError('')));
 
 function supersedeStartupForTokenEdit() {
   if (!initializationSettled) connectionOperations.begin();
@@ -1646,6 +2403,15 @@ document.addEventListener('keydown', (event) => {
 
 window.addEventListener('popstate', () => {
   if (window.history.state?.screen === 'remote' && remoteSession) {
+    if (isSshProfile(remoteSession.profile)) {
+      void navigateToSshProfile(
+        remoteSession.profile,
+        connectionTokens.get(remoteSession.serverUrl) || '',
+        {},
+        { pushHistory: false },
+      );
+      return;
+    }
     const connection = buildRemoteConnection(remoteSession.targetUrl);
     void navigateToServer(connection.serverUrl, connection.token, { pushHistory: false });
   } else {

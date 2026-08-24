@@ -3,6 +3,75 @@ import { normalizeRecentServers, rememberServer } from './connection.js';
 const MAX_CONNECTION_PROFILES = 5;
 const MAX_CONNECTION_NAME_LENGTH = 48;
 
+function normalizeSshId(value) {
+  const id = String(value || '').trim();
+  return /^[a-zA-Z0-9_-]{8,80}$/.test(id) ? id : '';
+}
+
+function stableSshId(item) {
+  const target = item?.ssh || {};
+  const jump = target.jump || {};
+  const seed = [
+    `${target.host || ''}:${target.port || 22}:${target.username || ''}:${target.remotePort || 3789}`,
+    jump.host ? `${jump.host}:${jump.port || 22}:${jump.username || ''}` : '',
+  ].join('|');
+  let hash = 2166136261;
+  for (const character of seed) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `ssh-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function normalizeSshJump(value) {
+  if (!value || typeof value !== 'object') return null;
+  const host = typeof value.host === 'string' ? value.host.trim() : '';
+  const username = typeof value.username === 'string' ? value.username.trim() : '';
+  const port = Number(value.port || 22);
+  if (!host || !username || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return {
+    host: host.slice(0, 255),
+    port,
+    username: username.slice(0, 128),
+    authMethod: value.authMethod === 'privateKey' ? 'privateKey' : 'password',
+    hostKeyFingerprint: typeof value.hostKeyFingerprint === 'string'
+      ? value.hostKeyFingerprint.trim().slice(0, 128)
+      : '',
+  };
+}
+
+function normalizeSshProfile(item) {
+  if (!item || typeof item !== 'object' || item.transport !== 'ssh' || !item.ssh) return null;
+  const ssh = item.ssh;
+  const host = typeof ssh.host === 'string' ? ssh.host.trim() : '';
+  const username = typeof ssh.username === 'string' ? ssh.username.trim() : '';
+  const port = Number(ssh.port || 22);
+  const remotePort = Number(ssh.remotePort || 3789);
+  const jump = normalizeSshJump(ssh.jump);
+  if (!host || !username || !Number.isInteger(port) || port < 1 || port > 65535
+    || !Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) return null;
+  const id = normalizeSshId(item.id) || stableSshId(item);
+  const profile = {
+    id,
+    transport: 'ssh',
+    serverUrl: `ssh://${id}/`,
+    ssh: {
+      host: host.slice(0, 255),
+      port,
+      username: username.slice(0, 128),
+      authMethod: ssh.authMethod === 'privateKey' ? 'privateKey' : 'password',
+      remoteHost: '127.0.0.1',
+      remotePort,
+      hostKeyFingerprint: typeof ssh.hostKeyFingerprint === 'string'
+        ? ssh.hostKeyFingerprint.trim().slice(0, 128)
+        : '',
+      ...(jump ? { jump } : {}),
+    },
+  };
+  const name = normalizeConnectionName(item.name);
+  return name ? { ...profile, name } : profile;
+}
+
 function normalizeConnectionName(value) {
   if (typeof value !== 'string') return '';
   return value.trim().replace(/\s+/g, ' ').slice(0, MAX_CONNECTION_NAME_LENGTH);
@@ -12,6 +81,13 @@ function normalizeConnectionProfiles(value) {
   if (!Array.isArray(value)) return [];
   const normalized = [];
   for (const item of value) {
+    const sshProfile = normalizeSshProfile(item);
+    if (sshProfile) {
+      if (normalized.some((profile) => profile.serverUrl === sshProfile.serverUrl)) continue;
+      normalized.push(sshProfile);
+      if (normalized.length === MAX_CONNECTION_PROFILES) break;
+      continue;
+    }
     const serverUrl = typeof item === 'string' ? item : item?.serverUrl;
     const name = typeof item === 'object' ? normalizeConnectionName(item?.name) : '';
     try {
@@ -124,13 +200,17 @@ export function saveConnectionProfiles(
 }
 
 export function removeConnectionProfile(current, serverUrl) {
-  const normalizedServer = normalizeRecentServers([serverUrl])[0];
+  const normalizedServer = typeof serverUrl === 'string' && serverUrl.startsWith('ssh://')
+    ? serverUrl
+    : normalizeRecentServers([serverUrl])[0];
   if (!normalizedServer) return normalizeConnectionProfiles(current);
   return normalizeConnectionProfiles(current).filter((profile) => profile.serverUrl !== normalizedServer);
 }
 
 export function renameConnectionProfile(current, serverUrl, name) {
-  const normalizedServer = normalizeRecentServers([serverUrl])[0];
+  const normalizedServer = typeof serverUrl === 'string' && serverUrl.startsWith('ssh://')
+    ? serverUrl
+    : normalizeRecentServers([serverUrl])[0];
   if (!normalizedServer) return normalizeConnectionProfiles(current);
   const normalizedName = normalizeConnectionName(name);
   return normalizeConnectionProfiles(current).map((profile) => {

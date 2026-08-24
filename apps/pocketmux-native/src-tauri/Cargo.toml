@@ -1,6 +1,6 @@
 [package]
 name = "pocketmux-native"
-version = "1.2.0"
+version = "1.3.1"
 description = "Pocketmux native connection shell for Windows and Android"
 authors = ["Pocketmux contributors"]
 edition = "2021"
@@ -21,8 +21,13 @@ tauri-build = { version = "2", features = [] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 log = "0.4"
+russh = { version = "=0.63.0", default-features = false, features = ["aws-lc-rs", "rsa"] }
+tokio = { version = "1", features = ["io-util", "net", "sync", "time"] }
 tauri-plugin-keyring-store = { version = "=0.2.0", default-features = false }
 tauri = { version = "2", features = [] }
+
+[patch.crates-io]
+android-native-keyring-store = { path = "vendor/android-native-keyring-store" }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"

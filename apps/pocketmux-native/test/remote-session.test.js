@@ -31,3 +31,15 @@ test('preserves connection identity and storage warnings across load state trans
   assert.equal(interactive.state, 'interactive');
   assert.throws(() => transitionRemoteSession(loaded, 'unknown'), /invalid-remote-state/);
 });
+
+test('keeps logical SSH identity separate from the ephemeral tunnel origin', () => {
+  const session = beginRemoteSession(
+    'ssh://ssh-profile-01/',
+    'http://127.0.0.1:43127/?native=1',
+    false,
+    { transportServerUrl: 'http://127.0.0.1:43127/', profile: { transport: 'ssh' } },
+  );
+  assert.equal(session.serverUrl, 'ssh://ssh-profile-01/');
+  assert.equal(session.transportServerUrl, 'http://127.0.0.1:43127/');
+  assert.equal(session.profile.transport, 'ssh');
+});

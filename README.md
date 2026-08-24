@@ -57,6 +57,8 @@ Open one of the printed URLs on your phone or desktop. The token is removed from
 
 For regular remote access, place Pocketmux behind an encrypted private connection such as Tailscale or an SSH tunnel. For temporary testing, you can use a Cloudflare Quick Tunnel without creating a Cloudflare account.
 
+The Android/Windows Pocketmux Native app also has a built-in **SSH tunnel** mode. It creates a local `-L` forward from the app to Pocketmux on the SSH server's `127.0.0.1:3789`, so no public tunnel is required. Enter the SSH account, Pocketmux access token, and accept the host-key fingerprint on first use. If the target host is reachable only through another SSH server, enable the app's **jump host** option: it connects to the jump host first, then opens the target SSH session through that connection. SSH mode is intended for foreground use; it does not keep a tunnel alive after the app exits.
+
 ### 1. Install `cloudflared`
 
 On Debian or Ubuntu:
