@@ -2460,7 +2460,7 @@ elements.authDiagnosticsClear?.addEventListener('click', () => {
 });
 
 renderAuthDiagnostics();
-authDebug('build-info', { build: '1.3.3' });
+authDebug('build-info', { build: '1.3.0' });
 
 elements.form.addEventListener('submit', async (event) => {
   event.preventDefault();

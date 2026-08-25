@@ -88,8 +88,8 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   const capability = JSON.parse(capabilityText);
 
   assert.match(html, /连接后会直接打开原有网页界面/);
-  assert.match(html, /styles\.css\?v=20260825-ssh-persistence-1-3-3/);
-  assert.match(html, /main\.js\?v=20260825-ssh-persistence-1-3-3/);
+  assert.match(html, /styles\.css\?v=20260825-ssh-persistence-1-3-0/);
+  assert.match(html, /main\.js\?v=20260825-ssh-persistence-1-3-0/);
   assert.match(html, /id="auth-diagnostics-card"[^>]*\shidden/);
   assert.match(html, /id="remote-menu-toggle"[^>]+aria-expanded="false"[\s\S]*?<span aria-hidden="true">›<\/span>/);
   assert.match(html, /id="remote-drawer"[^>]+aria-hidden="true"[^>]+inert/);
@@ -298,7 +298,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.windows[0].generalAutofillEnabled, false);
   assert.equal(config.identifier, 'io.github.yuxinkang.pocketmux');
-  assert.equal(config.bundle.android.versionCode, 1033);
+  assert.equal(config.bundle.android.versionCode, 1034);
   assert.match(config.app.security.csp, /frame-src http: https:/);
   assert.deepEqual(capability.permissions, ['core:default']);
   assert.equal('remote' in capability, false);
