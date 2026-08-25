@@ -137,6 +137,15 @@ fn ssh_secret_account(profile_id: &str, kind: &str) -> Result<String, String> {
     Ok(format!("ssh:{kind}:{profile_id}"))
 }
 
+fn validate_ssh_secret(kind: &str, secret: &str) -> Result<(), String> {
+    if secret.is_empty()
+        || matches!(kind, "privateKey" | "jumpPrivateKey") && secret.trim().is_empty()
+    {
+        return Err("SSH secret must not be empty".into());
+    }
+    Ok(())
+}
+
 fn server_origin(server_url: &str) -> String {
     reqwest::Url::parse(server_url)
         .map(|url| {
@@ -557,9 +566,7 @@ async fn set_ssh_secret(
     secret: String,
 ) -> Result<(), String> {
     authorize_shell(&webview, &shell_session, &session_token)?;
-    if secret.trim().is_empty() {
-        return Err("SSH secret must not be empty".into());
-    }
+    validate_ssh_secret(&kind, &secret)?;
     let account = ssh_secret_account(&profile_id, &kind)?;
     auth_info!(
         "[pocketmux-auth] SSH secret write start profile={} kind={}",
@@ -635,10 +642,25 @@ async fn delete_ssh_secrets(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ssh_passwords_preserve_whitespace_only_values() {
+        assert!(validate_ssh_secret("password", " ").is_ok());
+        assert!(validate_ssh_secret("jumpPassword", "   ").is_ok());
+        assert!(validate_ssh_secret("keyPassphrase", "\t").is_ok());
+    }
+
+    #[test]
+    fn ssh_secret_validation_rejects_empty_values_and_blank_private_keys() {
+        assert!(validate_ssh_secret("password", "").is_err());
+        assert!(validate_ssh_secret("jumpPassword", "").is_err());
+        assert!(validate_ssh_secret("privateKey", " ").is_err());
+        assert!(validate_ssh_secret("jumpPrivateKey", "\n\t").is_err());
+    }
+
     use super::{
         authorize_shell_context, classify_token_validation, has_pocketmux_identity, health_url,
         register_shell_session_context, server_origin, ssh_secret_account, token_account,
-        with_credential_lock, HealthResponse,
+        validate_ssh_secret, with_credential_lock, HealthResponse,
     };
     use reqwest::{header::HeaderMap, StatusCode};
     use std::{

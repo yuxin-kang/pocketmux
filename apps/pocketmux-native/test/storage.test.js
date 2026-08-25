@@ -225,6 +225,88 @@ test('keeps a deterministic SSH credential alias alongside the profile id', () =
   assert.deepEqual(sshCredentialProfileIds({ ...profile, id: ids[1] }), [ids[1]]);
 });
 
+test('recovers an SSH profile id from legacy serverUrl metadata', () => {
+  const storage = memoryStorage();
+  const legacyId = 'legacy-profile-1234';
+  const profile = {
+    transport: 'ssh',
+    serverUrl: `ssh://${legacyId}/`,
+    ssh: {
+      host: '10.12.120.237',
+      port: 11222,
+      username: 'kyx',
+      authMethod: 'password',
+      remotePort: 3789,
+      jump: {
+        host: '10.12.120.125',
+        port: 22,
+        username: 'kyx',
+        authMethod: 'password',
+      },
+    },
+  };
+
+  const remembered = rememberConnectionProfile(storage, 'profiles', [], profile);
+  const [loaded] = loadConnectionProfiles(storage, 'profiles', 'recent');
+
+  assert.equal(remembered.persisted, true);
+  assert.equal(loaded.id, legacyId);
+  assert.equal(loaded.serverUrl, `ssh://${legacyId}/`);
+  assert.ok(sshCredentialProfileIds(loaded).includes(legacyId));
+  assert.ok(sshCredentialProfileIds(loaded).some((id) => id.startsWith('ssh-')));
+});
+
+test('keeps a legacy serverUrl id when metadata already has a newer profile id', () => {
+  const storage = memoryStorage();
+  const profile = {
+    id: 'ssh-current-1234',
+    transport: 'ssh',
+    serverUrl: 'ssh://ssh-legacy-5678/',
+    ssh: {
+      host: '10.12.120.237',
+      port: 11222,
+      username: 'kyx',
+      authMethod: 'password',
+      remotePort: 3789,
+    },
+  };
+
+  rememberConnectionProfile(storage, 'profiles', [], profile);
+  const [loaded] = loadConnectionProfiles(storage, 'profiles', 'recent');
+
+  assert.equal(loaded.id, 'ssh-current-1234');
+  assert.ok(sshCredentialProfileIds(loaded).includes('ssh-legacy-5678'));
+});
+
+test('preserves SSH credential aliases when a saved endpoint is edited', () => {
+  const storage = memoryStorage();
+  const current = {
+    id: 'legacy-profile-1234',
+    credentialAliases: ['ssh-abcdef12'],
+    transport: 'ssh',
+    serverUrl: 'ssh://legacy-profile-1234/',
+    ssh: {
+      host: '10.12.120.237',
+      port: 11222,
+      username: 'kyx',
+      authMethod: 'password',
+      remotePort: 3789,
+      jump: {
+        host: '10.12.120.125',
+        port: 22,
+        username: 'kyx',
+        authMethod: 'password',
+      },
+    },
+  };
+  const updated = rememberConnectionProfile(storage, 'profiles', [current], {
+    ...current,
+    name: 'Gateway',
+  });
+
+  assert.ok(updated.connectionProfiles[0].credentialAliases.includes('ssh-abcdef12'));
+});
+
 test('keeps a custom connection name when metadata is refreshed and clears it with an empty rename', () => {
   const storage = memoryStorage();
   const current = [
@@ -297,8 +379,11 @@ test('persists SSH metadata with a stable logical id and no runtime tunnel port'
     },
   };
   const remembered = rememberConnectionProfile(storage, 'profiles', [], profile);
+  const [stored] = loadConnectionProfiles(storage, 'profiles', 'recent');
   assert.equal(remembered.persisted, true);
-  assert.deepEqual(loadConnectionProfiles(storage, 'profiles', 'recent'), [profile]);
+  assert.equal(stored.id, profile.id);
+  assert.equal(stored.serverUrl, profile.serverUrl);
+  assert.ok(stored.credentialAliases.includes(profile.id));
   assert.doesNotMatch(storage.getItem('profiles'), /127\.0\.0\.1:\d{4,5}/);
 });
 

@@ -41,6 +41,7 @@ import {
 } from './remote-viewport.js';
 import { beginRemoteSession, transitionRemoteSession } from './remote-session.js';
 import { persistValidatedCredential } from './validated-credential.js';
+import { createAuthDiagnostics } from './auth-diagnostics.js';
 import {
   loadConnectionProfiles,
   loadLegacyConnectionTokens,
@@ -168,6 +169,11 @@ const elements = {
   connectionNameServer: document.querySelector('#connection-name-server'),
   connectionName: document.querySelector('#connection-name'),
   cancelConnectionName: document.querySelector('#cancel-connection-name'),
+  authDiagnosticsCard: document.querySelector('#auth-diagnostics-card'),
+  authDiagnosticsCount: document.querySelector('#auth-diagnostics-count'),
+  authDiagnosticsList: document.querySelector('#auth-diagnostics-list'),
+  authDiagnosticsEmpty: document.querySelector('#auth-diagnostics-empty'),
+  authDiagnosticsClear: document.querySelector('#auth-diagnostics-clear'),
 };
 
 function availableStorage() {
@@ -178,7 +184,9 @@ function availableStorage() {
   }
 }
 
+const AUTH_DIAGNOSTICS_ENABLED = false;
 const storage = availableStorage();
+const authDiagnostics = createAuthDiagnostics(storage);
 let language = normalizeLanguage(readStoredValue(storage, LANGUAGE_KEY));
 let connectionProfiles = loadConnectionProfiles(
   storage,
@@ -214,9 +222,39 @@ let lateCredentialRecoveryStarted = false;
 let lateCredentialRecoveryAttempts = 0;
 let exitRequested = false;
 let sshStopPromise = Promise.resolve();
+let sshAttemptSequence = 0;
+
+function authDebugDetailsText(details) {
+  return Object.entries(details || {})
+    .map(([key, value]) => `${key}=${value}`)
+    .join(' ');
+}
+
+function renderAuthDiagnostics() {
+  if (!AUTH_DIAGNOSTICS_ENABLED || !elements.authDiagnosticsList) return;
+  const events = authDiagnostics.list();
+  elements.authDiagnosticsCount.textContent = String(events.length);
+  elements.authDiagnosticsEmpty.classList.toggle('is-hidden', events.length > 0);
+  elements.authDiagnosticsList.replaceChildren(...events.slice().reverse().map((entry) => {
+    const item = document.createElement('li');
+    item.className = 'auth-diagnostics-item';
+    const time = document.createElement('time');
+    time.dateTime = entry.at;
+    time.textContent = new Date(entry.at).toLocaleTimeString();
+    const event = document.createElement('strong');
+    event.textContent = entry.event;
+    const details = document.createElement('span');
+    details.textContent = authDebugDetailsText(entry.details);
+    item.append(time, event, details);
+    return item;
+  }));
+}
 
 function authDebug(event, details = {}) {
-  console.info('[pocketmux-auth]', event, details);
+  if (!AUTH_DIAGNOSTICS_ENABLED) return;
+  const entry = authDiagnostics.record(event, details);
+  console.info('[pocketmux-auth]', entry.event, entry.details);
+  renderAuthDiagnostics();
 }
 
 function text(key) {
@@ -364,6 +402,11 @@ function sshProfileFromForm(existing = null) {
     jumpAuthMethod,
   }) && (!jumpEnabled || sameJump);
   const id = sameEndpoint ? matchedExisting.id : createProfileId();
+  const credentialAliases = sameEndpoint
+    ? (Array.isArray(matchedExisting?.credentialAliases)
+      ? matchedExisting.credentialAliases
+      : [])
+    : [];
   const jump = jumpEnabled ? {
     host: jumpHost,
     port: jumpPort,
@@ -375,6 +418,7 @@ function sshProfileFromForm(existing = null) {
     id,
     transport: 'ssh',
     serverUrl: `ssh://${id}/`,
+    ...(credentialAliases.length ? { credentialAliases } : {}),
     ...(matchedExisting?.name ? { name: matchedExisting.name } : {}),
     ssh: {
       host,
@@ -1663,8 +1707,14 @@ function recoveryFocusForError(error) {
   const raw = sshErrorText(error);
   return {
     focusToken: raw === 'missing-token',
-    focusSsh: raw === 'ssh-password-required' || raw === 'ssh-private-key-required',
-    focusJump: raw === 'ssh-jump-password-required' || raw === 'ssh-jump-private-key-required',
+    focusSsh: raw === 'ssh-password-required'
+      || raw === 'ssh-private-key-required'
+      || raw === 'ssh-password-persistence-missing'
+      || raw === 'ssh-private-key-persistence-missing',
+    focusJump: raw === 'ssh-jump-password-required'
+      || raw === 'ssh-jump-private-key-required'
+      || raw === 'ssh-jump-password-persistence-missing'
+      || raw === 'ssh-jump-private-key-persistence-missing',
   };
 }
 
@@ -1680,11 +1730,17 @@ async function resolveSshCredentials(profile, provided = {}) {
     let readSucceeded = false;
     for (let attempt = 0; attempt < SSH_SECRET_READ_RETRIES; attempt += 1) {
       for (const profileId of profileIds) {
+        authDebug('ssh-read-start', { profileId, kind, attempt: attempt + 1 });
         try {
           stored = await invoke('get_ssh_secret', { profileId, kind });
           readSucceeded = true;
-          if (stored && (!privateKeyKind || stored.trim())) return stored;
+          if (stored && (!privateKeyKind || stored.trim())) {
+            authDebug('ssh-read-found', { profileId, kind, attempt: attempt + 1 });
+            return stored;
+          }
+          authDebug('ssh-read-missing', { profileId, kind, attempt: attempt + 1 });
         } catch {
+          authDebug('ssh-read-failed', { profileId, kind, attempt: attempt + 1 });
           // A legacy profile id may no longer exist. Try the deterministic
           // endpoint id in the same round before treating the read as failed.
         }
@@ -1765,20 +1821,89 @@ async function stopSshTunnel() {
   return stop;
 }
 
-async function establishSshTunnel(profile, providedCredentials = {}) {
+async function establishSshTunnel(
+  profile,
+  providedCredentials = {},
+  { attemptId = 0, isCurrent = () => true } = {},
+) {
   let trustedProfile = profile;
-  const credentials = await resolveSshCredentials(profile, providedCredentials);
+  const credentialSnapshot = Object.freeze({
+    password: providedCredentials.password ?? '',
+    privateKey: providedCredentials.privateKey ?? '',
+    keyPassphrase: providedCredentials.keyPassphrase ?? '',
+    jumpPassword: providedCredentials.jumpPassword ?? '',
+    jumpPrivateKey: providedCredentials.jumpPrivateKey ?? '',
+    jumpKeyPassphrase: providedCredentials.jumpKeyPassphrase ?? '',
+  });
+  const credentials = await resolveSshCredentials(profile, credentialSnapshot);
+  if (!isCurrent()) throw new Error('ssh-attempt-superseded');
+  const hasCredential = (value, { privateKey = false } = {}) => (
+    typeof value === 'string'
+    && (privateKey ? value.trim().length > 0 : value.length > 0)
+  );
+  // Keep the values captured at the form boundary authoritative for this
+  // attempt. Loading a saved profile clears the form fields, and an older
+  // WebView can otherwise leave the native call and persistence plan out of
+  // sync even though the SSH handshake itself used the entered secret.
+  const effectiveCredentials = {
+    ...credentials,
+    password: hasCredential(credentialSnapshot.password)
+      ? credentialSnapshot.password
+      : credentials.password,
+    privateKey: hasCredential(credentialSnapshot.privateKey, { privateKey: true })
+      ? credentialSnapshot.privateKey
+      : credentials.privateKey,
+    keyPassphrase: hasCredential(credentialSnapshot.keyPassphrase)
+      ? credentialSnapshot.keyPassphrase
+      : credentials.keyPassphrase,
+    jumpPassword: hasCredential(credentialSnapshot.jumpPassword)
+      ? credentialSnapshot.jumpPassword
+      : credentials.jumpPassword,
+    jumpPrivateKey: hasCredential(credentialSnapshot.jumpPrivateKey, { privateKey: true })
+      ? credentialSnapshot.jumpPrivateKey
+      : credentials.jumpPrivateKey,
+    jumpKeyPassphrase: hasCredential(credentialSnapshot.jumpKeyPassphrase)
+      ? credentialSnapshot.jumpKeyPassphrase
+      : credentials.jumpKeyPassphrase,
+  };
+  authDebug('ssh-auth-plan', {
+    attempt: attemptId,
+    profileId: trustedProfile.id,
+    authMethod: trustedProfile.ssh.authMethod,
+    jumpAuthMethod: trustedProfile.ssh.jump?.authMethod || 'none',
+    hasJump: Boolean(trustedProfile.ssh.jump),
+    targetPasswordProvided: hasCredential(effectiveCredentials.password),
+    targetPrivateKeyProvided: hasCredential(effectiveCredentials.privateKey, { privateKey: true }),
+    jumpPasswordProvided: hasCredential(effectiveCredentials.jumpPassword),
+    jumpPrivateKeyProvided: hasCredential(effectiveCredentials.jumpPrivateKey, { privateKey: true }),
+    targetProvided: hasCredential(effectiveCredentials.password)
+      || hasCredential(effectiveCredentials.privateKey, { privateKey: true }),
+    jumpProvided: hasCredential(effectiveCredentials.jumpPassword)
+      || hasCredential(effectiveCredentials.jumpPrivateKey, { privateKey: true }),
+  });
   let result;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (!isCurrent()) throw new Error('ssh-attempt-superseded');
+    authDebug('ssh-start-input', {
+      attempt: attemptId,
+      profileId: trustedProfile.id,
+      authMethod: trustedProfile.ssh.authMethod,
+      jumpAuthMethod: trustedProfile.ssh.jump?.authMethod || 'none',
+      hasJump: Boolean(trustedProfile.ssh.jump),
+      targetPasswordProvided: hasCredential(effectiveCredentials.password),
+      targetPrivateKeyProvided: hasCredential(effectiveCredentials.privateKey, { privateKey: true }),
+      jumpPasswordProvided: hasCredential(effectiveCredentials.jumpPassword),
+      jumpPrivateKeyProvided: hasCredential(effectiveCredentials.jumpPrivateKey, { privateKey: true }),
+    });
     try {
       result = await credentials.invoke('start_ssh_tunnel', {
         host: trustedProfile.ssh.host,
         port: trustedProfile.ssh.port,
         username: trustedProfile.ssh.username,
         authMethod: trustedProfile.ssh.authMethod,
-        password: credentials.password,
-        privateKey: credentials.privateKey,
-        keyPassphrase: credentials.keyPassphrase,
+        password: effectiveCredentials.password,
+        privateKey: effectiveCredentials.privateKey,
+        keyPassphrase: effectiveCredentials.keyPassphrase,
         remoteHost: '127.0.0.1',
         remotePort: trustedProfile.ssh.remotePort,
         jump: trustedProfile.ssh.jump
@@ -1787,9 +1912,9 @@ async function establishSshTunnel(profile, providedCredentials = {}) {
             port: trustedProfile.ssh.jump.port,
             username: trustedProfile.ssh.jump.username,
             authMethod: trustedProfile.ssh.jump.authMethod,
-            password: credentials.jumpPassword,
-            privateKey: credentials.jumpPrivateKey,
-            keyPassphrase: credentials.jumpKeyPassphrase,
+            password: effectiveCredentials.jumpPassword,
+            privateKey: effectiveCredentials.jumpPrivateKey,
+            keyPassphrase: effectiveCredentials.jumpKeyPassphrase,
             hostKeyFingerprint: trustedProfile.ssh.jump.hostKeyFingerprint || null,
           }
           : null,
@@ -1814,6 +1939,7 @@ async function establishSshTunnel(profile, providedCredentials = {}) {
         if (typeof globalThis.confirm !== 'function' || !globalThis.confirm(prompt)) {
           throw new Error(raw);
         }
+        if (!isCurrent()) throw new Error('ssh-attempt-superseded');
         trustedProfile = trustCase.field === 'jump'
           ? {
             ...trustedProfile,
@@ -1838,13 +1964,39 @@ async function establishSshTunnel(profile, providedCredentials = {}) {
     }
   }
   if (!result?.localUrl) throw new Error('ssh-unavailable');
+  if (!isCurrent()) throw new Error('ssh-attempt-superseded');
 
   const profileIds = sshCredentialProfileIds(trustedProfile);
   const persistSecret = async (kind, secret) => {
-    if (!secret || !String(secret).trim()) return;
+    const privateKey = kind === 'privateKey' || kind === 'jumpPrivateKey';
+    if (!hasCredential(secret, { privateKey })) {
+      authDebug('ssh-write-skipped', {
+        attempt: attemptId,
+        profileId: profileIds[0],
+        kind,
+        reason: 'empty',
+      });
+      return false;
+    }
+    authDebug('ssh-persist-plan', {
+      attempt: attemptId,
+      profileId: profileIds[0],
+      kind,
+      targetPasswordProvided: kind === 'password',
+      targetPrivateKeyProvided: kind === 'privateKey',
+      jumpPasswordProvided: kind === 'jumpPassword',
+      jumpPrivateKeyProvided: kind === 'jumpPrivateKey',
+    });
     for (const profileId of profileIds) {
       let persisted = false;
       for (let attempt = 0; attempt < SSH_SECRET_WRITE_RETRIES; attempt += 1) {
+        if (!isCurrent()) throw new Error('ssh-attempt-superseded');
+        authDebug('ssh-write-start', {
+          attempt: attemptId,
+          profileId,
+          kind,
+          retry: attempt + 1,
+        });
         try {
           await credentials.invoke('set_ssh_secret', {
             profileId,
@@ -1852,8 +2004,21 @@ async function establishSshTunnel(profile, providedCredentials = {}) {
             secret,
           });
           persisted = true;
+          authDebug('ssh-write-success', {
+            attempt: attemptId,
+            profileId,
+            kind,
+            retry: attempt + 1,
+          });
           break;
-        } catch {
+        } catch (error) {
+          authDebug('ssh-write-failed', {
+            attempt: attemptId,
+            profileId,
+            kind,
+            retry: attempt + 1,
+            error: String(error),
+          });
           if (attempt + 1 < SSH_SECRET_WRITE_RETRIES) {
             await new Promise((resolve) => window.setTimeout(resolve, SSH_SECRET_WRITE_RETRY_DELAY_MS));
           }
@@ -1861,28 +2026,50 @@ async function establishSshTunnel(profile, providedCredentials = {}) {
       }
       if (!persisted) throw new Error('ssh-secret-persistence-failed');
     }
+    return true;
+  };
+  const persistRequiredSecret = async (kind, secret) => {
+    if (await persistSecret(kind, secret)) return;
+    const prefix = kind.startsWith('jump') ? 'ssh-jump-' : 'ssh-';
+    const suffix = kind.includes('PrivateKey') ? 'private-key' : 'password';
+    throw new Error(`${prefix}${suffix}-persistence-missing`);
   };
   try {
+    if (!isCurrent()) throw new Error('ssh-attempt-superseded');
     if (trustedProfile.ssh.authMethod === 'password') {
-      await persistSecret('password', credentials.password);
+      await persistRequiredSecret('password', effectiveCredentials.password);
     } else {
-      await persistSecret('privateKey', credentials.privateKey);
-      await persistSecret('keyPassphrase', credentials.keyPassphrase);
+      await persistRequiredSecret('privateKey', effectiveCredentials.privateKey);
+      await persistSecret('keyPassphrase', effectiveCredentials.keyPassphrase);
     }
-    if (trustedProfile.ssh.jump) {
-      if (trustedProfile.ssh.jump.authMethod === 'password') {
-        await persistSecret('jumpPassword', credentials.jumpPassword);
+    const jumpProfile = trustedProfile.ssh.jump;
+    if (jumpProfile) {
+      if (jumpProfile.authMethod === 'password') {
+        await persistRequiredSecret('jumpPassword', effectiveCredentials.jumpPassword);
       } else {
-        await persistSecret('jumpPrivateKey', credentials.jumpPrivateKey);
-        await persistSecret('jumpKeyPassphrase', credentials.jumpKeyPassphrase);
+        await persistRequiredSecret('jumpPrivateKey', effectiveCredentials.jumpPrivateKey);
+        await persistSecret('jumpKeyPassphrase', effectiveCredentials.jumpKeyPassphrase);
+      }
+      // Preserve a secret that was explicitly entered even if an older
+      // profile serialized the side with the wrong authMethod. This is a
+      // compatibility backfill; the current authMethod still controls the
+      // next SSH handshake.
+      if (jumpProfile.authMethod !== 'password' && hasCredential(credentialSnapshot.jumpPassword)) {
+        await persistSecret('jumpPassword', credentialSnapshot.jumpPassword);
+      }
+      if (jumpProfile.authMethod !== 'privateKey'
+        && hasCredential(credentialSnapshot.jumpPrivateKey, { privateKey: true })) {
+        await persistSecret('jumpPrivateKey', credentialSnapshot.jumpPrivateKey);
       }
     }
   } catch (error) {
-    await stopSshTunnel();
+    if (isCurrent()) await stopSshTunnel();
     throw error;
   }
+  if (!isCurrent()) throw new Error('ssh-attempt-superseded');
   const persistedProfile = {
     ...trustedProfile,
+    credentialAliases: profileIds,
     ssh: {
       ...trustedProfile.ssh,
       hostKeyFingerprint: result.hostKeyFingerprint || trustedProfile.ssh.hostKeyFingerprint || '',
@@ -1981,14 +2168,17 @@ async function navigateToSshProfile(profile, tokenInput = '', providedCredential
   const token = String(tokenInput || savedTokenForServer(profile.serverUrl) || '').trim();
   if (!token) throw new Error('missing-token');
   const operation = connectionOperations.begin();
+  const attemptId = ++sshAttemptSequence;
+  const isCurrent = () => connectionOperations.isCurrent(operation)
+    && attemptId === sshAttemptSequence;
   await sshStopPromise;
-  if (!connectionOperations.isCurrent(operation)) return false;
+  if (!isCurrent()) return false;
   elements.connectionTransport.value = 'ssh';
   loadSshProfileIntoForm(profile);
   elements.connectButton.disabled = true;
   elements.connectButton.classList.add('is-loading');
-  const tunnel = await establishSshTunnel(profile, providedCredentials);
-  if (!connectionOperations.isCurrent(operation)) return false;
+  const tunnel = await establishSshTunnel(profile, providedCredentials, { attemptId, isCurrent });
+  if (!isCurrent()) return false;
   const connection = buildSshRuntimeConnection(tunnel.profile, tunnel.result.localUrl, token);
   return navigateConnection(connection, {
     operation,
@@ -2032,6 +2222,7 @@ async function restoreMostRecentConnection() {
     }
     return await navigateToServer(profile.serverUrl, token, { pushHistory: false });
   } catch (error) {
+    if (sshErrorText(error) === 'ssh-attempt-superseded') return false;
     window.history.replaceState(
       { screen: 'launcher' },
       '',
@@ -2181,6 +2372,13 @@ function recentServerRow(serverUrl) {
   openButton.addEventListener('click', async () => {
     if (!initializationSettled) connectionOperations.begin();
     setError('');
+    // Capture any credentials the user entered before loading the saved
+    // profile. loadSshProfileIntoForm intentionally clears secret fields;
+    // reading them after that call made the recent-server action drop the
+    // jump-host password before navigateToSshProfile could persist it.
+    const providedCredentials = isSshProfile(profile)
+      ? sshCredentialsFromForm()
+      : {};
     if (isSshProfile(profile)) loadSshProfileIntoForm(profile);
     else {
       elements.connectionTransport.value = 'direct';
@@ -2195,7 +2393,7 @@ function recentServerRow(serverUrl) {
     }
     try {
       if (isSshProfile(profile)) {
-        await navigateToSshProfile(profile, savedToken, sshCredentialsFromForm());
+        await navigateToSshProfile(profile, savedToken, providedCredentials);
       } else {
         await navigateToServer(serverUrl, savedToken);
       }
@@ -2255,6 +2453,14 @@ function renderRecentServers() {
   elements.recentEmpty.classList.toggle('is-hidden', recentServers.length > 0);
   renderSwitchTargets();
 }
+
+elements.authDiagnosticsClear?.addEventListener('click', () => {
+  authDiagnostics.clear();
+  renderAuthDiagnostics();
+});
+
+renderAuthDiagnostics();
+authDebug('build-info', { build: '1.3.3' });
 
 elements.form.addEventListener('submit', async (event) => {
   event.preventDefault();

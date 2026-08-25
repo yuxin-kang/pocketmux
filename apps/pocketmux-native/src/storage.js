@@ -8,6 +8,20 @@ function normalizeSshId(value) {
   return /^[a-zA-Z0-9_-]{8,80}$/.test(id) ? id : '';
 }
 
+function sshIdFromServerUrl(value) {
+  if (typeof value !== 'string' || !value.startsWith('ssh://')) return '';
+  try {
+    return normalizeSshId(new URL(value).hostname);
+  } catch {
+    return '';
+  }
+}
+
+function normalizeSshCredentialAliases(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(normalizeSshId).filter(Boolean))];
+}
+
 function stableSshId(item) {
   const target = item?.ssh || {};
   const jump = target.jump || {};
@@ -31,6 +45,7 @@ export function sshCredentialProfileIds(profile) {
   if (!profile?.ssh) return [];
   return [...new Set([
     normalizeSshId(profile.id),
+    ...normalizeSshCredentialAliases(profile.credentialAliases),
     stableSshId(profile),
   ].filter(Boolean))];
 }
@@ -62,11 +77,23 @@ function normalizeSshProfile(item) {
   const jump = normalizeSshJump(ssh.jump);
   if (!host || !username || !Number.isInteger(port) || port < 1 || port > 65535
     || !Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) return null;
-  const id = normalizeSshId(item.id) || stableSshId(item);
+  // Older metadata sometimes retained only serverUrl and ssh fields. Recover
+  // the original profile id from that URL before falling back to the endpoint
+  // alias; the original id is where the first SSH build stored its secrets.
+  const storedId = normalizeSshId(item.id) || sshIdFromServerUrl(item.serverUrl);
+  const legacyUrlId = sshIdFromServerUrl(item.serverUrl);
+  const id = storedId || stableSshId(item);
+  const credentialAliases = normalizeSshCredentialAliases([
+    ...(Array.isArray(item.credentialAliases) ? item.credentialAliases : []),
+    storedId,
+    legacyUrlId,
+    stableSshId(item),
+  ]);
   const profile = {
     id,
     transport: 'ssh',
     serverUrl: `ssh://${id}/`,
+    ...(credentialAliases.length ? { credentialAliases } : {}),
     ssh: {
       host: host.slice(0, 255),
       port,

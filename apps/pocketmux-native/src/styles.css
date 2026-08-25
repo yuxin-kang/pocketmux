@@ -247,6 +247,16 @@ h2 { margin-top: 6px; font-size: 18px; font-weight: 650; letter-spacing: -0.025e
 .recent-rename, .recent-remove { width: 44px; padding: 0; font-size: 18px; }
 .recent-open:hover, .recent-rename:hover, .recent-remove:hover { border-color: var(--line-strong); background: var(--surface-soft); color: var(--text); }
 .recent-empty { margin-top: 18px; padding: 22px 10px; border: 1px dashed var(--line); border-radius: 10px; color: var(--faint); font-size: 11px; line-height: 1.55; text-align: center; }
+.auth-diagnostics-card { grid-column: 1 / -1; padding: 20px 24px; border: 1px solid rgba(232, 195, 124, 0.28); border-radius: 16px; background: rgba(29, 32, 38, 0.82); }
+.diagnostics-hint { margin-top: 10px; color: var(--faint); font-size: 10px; line-height: 1.5; }
+.auth-diagnostics-list { display: grid; max-height: 330px; gap: 6px; margin: 14px 0 0; padding: 0; overflow: auto; list-style: none; }
+.auth-diagnostics-item { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 8px; min-width: 0; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: rgba(16, 17, 20, 0.55); font-family: var(--mono); font-size: 9px; line-height: 1.45; }
+.auth-diagnostics-item time { color: var(--faint); }
+.auth-diagnostics-item strong { color: var(--warning); font-weight: 650; }
+.auth-diagnostics-item span { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+.auth-diagnostics-empty { margin-top: 14px; padding: 14px 10px; border: 1px dashed var(--line); border-radius: 8px; color: var(--faint); font-size: 10px; text-align: center; }
+.diagnostics-clear { min-height: 36px; margin-top: 12px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; }
+.diagnostics-clear:hover { border-color: var(--line-strong); background: var(--surface-soft); color: var(--text); }
 .app-footer { display: flex; min-height: 48px; align-items: center; justify-content: center; gap: 9px; padding: 10px 18px calc(10px + env(safe-area-inset-bottom)); color: var(--faint); font-size: 11px; text-align: center; }
 .app-footer .status-dot { flex: 0 0 auto; }
 
@@ -509,6 +519,7 @@ h2 { margin-top: 6px; font-size: 18px; font-weight: 650; letter-spacing: -0.025e
   .launcher { min-height: auto; grid-template-columns: 1fr; padding: 22px 14px 20px; }
   .connection-card { padding: 26px 20px; }
   .recent-card { padding: 20px; }
+  .auth-diagnostics-card { padding: 18px 20px; }
   .recent-item { align-items: flex-start; }
 }
 
@@ -516,6 +527,7 @@ h2 { margin-top: 6px; font-size: 18px; font-weight: 650; letter-spacing: -0.025e
   .product-subtitle { display: none; }
   .connection-card { padding: 24px 17px; }
   .recent-card { padding: 18px 15px; }
+  .auth-diagnostics-card { padding: 16px 15px; }
   .recent-item { display: grid; }
   .recent-actions { justify-content: flex-end; }
   .remote-drawer { width: min(90vw, 320px); }

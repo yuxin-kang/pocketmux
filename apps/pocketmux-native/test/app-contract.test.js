@@ -88,8 +88,9 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   const capability = JSON.parse(capabilityText);
 
   assert.match(html, /连接后会直接打开原有网页界面/);
-  assert.match(html, /styles\.css\?v=20260824-ssh-credentials-2300/);
-  assert.match(html, /main\.js\?v=20260824-ssh-credentials-2300/);
+  assert.match(html, /styles\.css\?v=20260825-ssh-persistence-1-3-3/);
+  assert.match(html, /main\.js\?v=20260825-ssh-persistence-1-3-3/);
+  assert.match(html, /id="auth-diagnostics-card"[^>]*\shidden/);
   assert.match(html, /id="remote-menu-toggle"[^>]+aria-expanded="false"[\s\S]*?<span aria-hidden="true">›<\/span>/);
   assert.match(html, /id="remote-drawer"[^>]+aria-hidden="true"[^>]+inert/);
   assert.match(html, /id="refresh-remote"/);
@@ -101,6 +102,9 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(html, /id="exit-app" class="drawer-action"[\s\S]*?<svg class="drawer-action-icon exit-outline-icon"[\s\S]*?<rect x="5" y="5" width="14" height="14"/);
   assert.match(html, /id="connection-name-dialog"[^>]+class="connection-name-dialog"/);
   assert.match(html, /id="connection-name"[^>]+maxlength="48"/);
+  assert.match(html, /id="auth-diagnostics-card"/);
+  assert.match(html, /id="auth-diagnostics-list"/);
+  assert.match(html, /id="auth-diagnostics-clear"/);
   assert.doesNotMatch(html, /id="switch-connection"|Other server|其他服务器/);
   assert.doesNotMatch(html, /id="back-to-connections"/);
   assert.match(html, /id="remote-loading-cover"/);
@@ -294,7 +298,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.windows[0].generalAutofillEnabled, false);
   assert.equal(config.identifier, 'io.github.yuxinkang.pocketmux');
-  assert.equal(config.bundle.android.versionCode, 1027);
+  assert.equal(config.bundle.android.versionCode, 1033);
   assert.match(config.app.security.csp, /frame-src http: https:/);
   assert.deepEqual(capability.permissions, ['core:default']);
   assert.equal('remote' in capability, false);
@@ -487,19 +491,45 @@ test('initializes Android ndk-context before keyring access', async () => {
 });
 
 test('diagnoses credential persistence without logging access tokens', async () => {
-  const [main, rust] = await Promise.all([
+  const [main, rust, diagnostics] = await Promise.all([
     readFile(path.join(root, 'src', 'main.js'), 'utf8'),
     readFile(path.join(root, 'src-tauri', 'src', 'lib.rs'), 'utf8'),
+    readFile(path.join(root, 'src', 'auth-diagnostics.js'), 'utf8'),
   ]);
   assert.match(main, /authDebug\('write-start'/);
   assert.match(main, /authDebug\('write-failed'/);
   assert.match(main, /authDebug\('persistence-result'/);
   assert.match(main, /authDebug\('read-complete'/);
   assert.doesNotMatch(main, /authDebug\([^)]*token:/);
+  assert.match(main, /createAuthDiagnostics/);
+  assert.match(main, /authDebug\('ssh-read-start'/);
+  assert.match(main, /authDebug\('ssh-write-success'/);
+  assert.match(main, /authDebug\('ssh-auth-plan'/);
+  assert.match(main, /authDebug\('ssh-write-skipped'/);
+  assert.match(main, /persistRequiredSecret\('jumpPassword'/);
+  assert.match(diagnostics, /pocketmux-native-auth-diagnostics-v1/);
+  assert.match(diagnostics, /secret|password|privateKey|passphrase/);
+  assert.match(diagnostics, /redacted/);
   assert.match(rust, /fn server_origin\(/);
   assert.match(rust, /keyring write failed origin=/);
   assert.match(rust, /keyring read failed origin=/);
   assert.doesNotMatch(rust, /log::(?:info|warn|error)!\([^;]*expected_token/);
+});
+
+test('captures recent SSH credentials before loading the saved profile', async () => {
+  const main = await readFile(path.join(root, 'src', 'main.js'), 'utf8');
+  const recentOpenSource = main.slice(
+    main.indexOf("openButton.addEventListener('click', async () =>"),
+    main.indexOf("const removeButton = document.createElement('button')"),
+  );
+  assert.match(
+    recentOpenSource,
+    /const providedCredentials = isSshProfile\(profile\)[\s\S]*?sshCredentialsFromForm\(\)[\s\S]*?loadSshProfileIntoForm\(profile\)/,
+  );
+  assert.match(
+    recentOpenSource,
+    /navigateToSshProfile\(profile, savedToken, providedCredentials\)/,
+  );
 });
 
 test('acknowledges native authentication immediately after health succeeds', async () => {
