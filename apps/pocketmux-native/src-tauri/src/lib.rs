@@ -197,7 +197,7 @@ fn register_shell_session(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn exit_app(
+async fn exit_app(
     app: tauri::AppHandle,
     webview: tauri::WebviewWindow,
     shell_session: tauri::State<'_, ShellSession>,
@@ -205,7 +205,7 @@ fn exit_app(
     session_token: String,
 ) -> Result<(), String> {
     authorize_shell(&webview, &shell_session, &session_token)?;
-    ssh_tunnel::stop(&ssh_tunnels)?;
+    ssh_tunnel::stop(&ssh_tunnels).await?;
     app.exit(0);
     Ok(())
 }
@@ -249,14 +249,14 @@ async fn start_ssh_tunnel(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn stop_ssh_tunnel(
+async fn stop_ssh_tunnel(
     webview: tauri::WebviewWindow,
     shell_session: tauri::State<'_, ShellSession>,
     ssh_tunnels: tauri::State<'_, SshTunnelManager>,
     session_token: String,
 ) -> Result<(), String> {
     authorize_shell(&webview, &shell_session, &session_token)?;
-    ssh_tunnel::stop(&ssh_tunnels)
+    ssh_tunnel::stop(&ssh_tunnels).await
 }
 
 #[tauri::command(rename_all = "camelCase")]

@@ -57,6 +57,7 @@
   const NATIVE_LANGUAGE_MESSAGE_TYPE = 'pocketmux:language';
   const NATIVE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required';
   const NATIVE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded';
+  const NATIVE_RECONNECT_REQUEST_MESSAGE_TYPE = 'pocketmux:reconnect-request';
   const NATIVE_FILE_ACTION_REQUEST_MESSAGE_TYPE = 'pocketmux:file-action-request';
   const NATIVE_FILE_ACTION_RESULT_MESSAGE_TYPE = 'pocketmux:file-action-result';
   const nativeFileActionRequests = new Map();
@@ -66,6 +67,10 @@
   const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
   const MAX_ATTACHMENTS_PER_MESSAGE = 10;
   const MAX_COMBINED_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+  const HEALTH_RETRY_ATTEMPTS = 4;
+  const HEALTH_RETRY_DELAY_MS = 350;
+  const SESSION_RETRY_ATTEMPTS = 3;
+  const SESSION_RETRY_DELAY_MS = 300;
   const IMAGE_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
   const INBOX_IMAGE_CONTENT_TYPES = new Set([
     'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/heic',
@@ -681,6 +686,57 @@
     return payload?.ok === true
       && payload.product === 'pocketmux'
       && payload.protocolVersion === 1;
+  }
+
+  function isTransientHealthError(error) {
+    if (error?.unauthorized) return false;
+    return error?.status === undefined
+      || error.status === 408
+      || error.status === 425
+      || error.status === 429
+      || error.status >= 500;
+  }
+
+  async function fetchSessionsWithRetry() {
+    let lastError;
+    for (let attempt = 0; attempt < SESSION_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        return await api('/api/sessions');
+      } catch (error) {
+        lastError = error;
+        if (!isTransientHealthError(error) || attempt + 1 >= SESSION_RETRY_ATTEMPTS) {
+          throw error;
+        }
+        await new Promise((resolve) => window.setTimeout(
+          resolve,
+          SESSION_RETRY_DELAY_MS * (attempt + 1),
+        ));
+      }
+    }
+    throw lastError || new Error('sessions-unavailable');
+  }
+
+  async function fetchHealthWithRetry() {
+    let lastError;
+    for (let attempt = 0; attempt < HEALTH_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        const health = await api('/api/health', { requirePocketmuxIdentity: true });
+        if (!isPocketmuxHealthPayload(health)) {
+          throw responseError({}, 502, 'error.requestFailed');
+        }
+        return health;
+      } catch (error) {
+        lastError = error;
+        if (!isTransientHealthError(error) || attempt + 1 >= HEALTH_RETRY_ATTEMPTS) {
+          throw error;
+        }
+        await new Promise((resolve) => window.setTimeout(
+          resolve,
+          HEALTH_RETRY_DELAY_MS * (attempt + 1),
+        ));
+      }
+    }
+    throw lastError || new Error('health-unavailable');
   }
 
   async function api(path, options = {}) {
@@ -1347,7 +1403,7 @@
       state.refreshing = true;
       if (!quiet) setConnection('connection.syncing', 'loading');
       try {
-        const payload = await api('/api/sessions');
+        const payload = await fetchSessionsWithRetry();
         state.sessions = payload.sessions || [];
         let selectionChanged = false;
         const current = selectedSession();
@@ -1386,6 +1442,12 @@
     } finally {
       if (state.refreshPromise === refreshPromise) state.refreshPromise = null;
     }
+  }
+
+  function requestNativeReconnect() {
+    if (!nativeBootstrap || window.parent === window) return false;
+    window.parent.postMessage({ type: NATIVE_RECONNECT_REQUEST_MESSAGE_TYPE }, '*');
+    return true;
   }
 
   async function loadOutput({ quiet = false, forceScrollBottom = false } = {}) {
@@ -1809,10 +1871,7 @@
     state.authErrorMessages = null;
     renderAuthError();
     try {
-      const health = await api('/api/health', { requirePocketmuxIdentity: true });
-      if (!isPocketmuxHealthPayload(health)) {
-        throw responseError({}, 502, 'error.requestFailed');
-      }
+      await fetchHealthWithRetry();
       if (!nativeBootstrap) localStorage.setItem('tmux-relay-token', state.token);
       // The health response is the authoritative authentication result. Notify the
       // native shell before loading optional session data so a slow/broken session
@@ -1837,7 +1896,10 @@
     event.preventDefault();
     unlock(elements.tokenInput.value);
   });
-  elements.refreshButton.addEventListener('click', () => refreshSessions());
+  elements.refreshButton.addEventListener('click', () => {
+    if (requestNativeReconnect()) return;
+    void refreshSessions();
+  });
   elements.inboxButton?.addEventListener('click', openInbox);
   elements.closeInbox?.addEventListener('click', () => closeDialog(elements.inboxDialog));
   elements.closeFilePreview?.addEventListener('click', closeFilePreviewDialog);

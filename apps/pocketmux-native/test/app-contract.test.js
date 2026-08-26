@@ -227,6 +227,11 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /setLanguage\(event\.data\.language\)/);
   assert.match(main, /REMOTE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required'/);
   assert.match(main, /REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded'/);
+  assert.match(main, /REMOTE_RECONNECT_REQUEST_MESSAGE_TYPE = 'pocketmux:reconnect-request'/);
+  assert.match(main, /event\.data\?\.type === REMOTE_RECONNECT_REQUEST_MESSAGE_TYPE[\s\S]*?requestRemoteReconnect\(\{ force: true \}\)/);
+  assert.match(main, /document\.addEventListener\('visibilitychange'/);
+  assert.match(main, /REMOTE_BACKGROUND_RECONNECT_THRESHOLD_MS = 10000/);
+  assert.match(main, /requestRemoteReconnect\(\)/);
   assert.match(main, /REMOTE_FILE_ACTION_REQUEST_MESSAGE_TYPE = 'pocketmux:file-action-request'/);
   assert.match(main, /window\.PocketmuxFiles/);
   assert.match(main, /base64FromBytes\(bytes\)/);
@@ -239,6 +244,9 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /elements\.accessToken\.addEventListener\('input'/);
   assert.match(browserApp, /NATIVE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required'/);
   assert.match(browserApp, /NATIVE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded'/);
+  assert.match(browserApp, /NATIVE_RECONNECT_REQUEST_MESSAGE_TYPE = 'pocketmux:reconnect-request'/);
+  assert.match(browserApp, /function requestNativeReconnect\(\)/);
+  assert.match(browserApp, /if \(requestNativeReconnect\(\)\) return;/);
   assert.match(browserApp, /NATIVE_FILE_ACTION_REQUEST_MESSAGE_TYPE = 'pocketmux:file-action-request'/);
   assert.match(browserApp, /requestNativeFileAction\(file, blob, 'open'\)/);
   assert.match(browserApp, /requestNativeFileAction\(file, blob, 'save'\)/);
@@ -298,7 +306,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.windows[0].generalAutofillEnabled, false);
   assert.equal(config.identifier, 'io.github.yuxinkang.pocketmux');
-  assert.equal(config.bundle.android.versionCode, 1034);
+  assert.equal(config.bundle.android.versionCode, 1035);
   assert.match(config.app.security.csp, /frame-src http: https:/);
   assert.deepEqual(capability.permissions, ['core:default']);
   assert.equal('remote' in capability, false);
@@ -357,7 +365,11 @@ test('routes startup SSH recovery errors to the matching credential field', asyn
 });
 
 test('serializes SSH shutdown before a replacement tunnel starts', async () => {
-  const main = await readFile(path.join(root, 'src', 'main.js'), 'utf8');
+  const [main, rust, tunnel] = await Promise.all([
+    readFile(path.join(root, 'src', 'main.js'), 'utf8'),
+    readFile(path.join(root, 'src-tauri', 'src', 'lib.rs'), 'utf8'),
+    readFile(path.join(root, 'src-tauri', 'src', 'ssh_tunnel.rs'), 'utf8'),
+  ]);
   assert.match(main, /let sshStopPromise = Promise\.resolve\(\);/);
   assert.match(main, /const previousStop = sshStopPromise;[\s\S]*?sshStopPromise = stop\.catch/);
   const sshNavigation = main.slice(
@@ -368,6 +380,12 @@ test('serializes SSH shutdown before a replacement tunnel starts', async () => {
     sshNavigation.indexOf('await sshStopPromise') < sshNavigation.indexOf('establishSshTunnel('),
     'a replacement SSH tunnel must wait for any pending stop operation',
   );
+  assert.match(rust, /async fn exit_app\(/);
+  assert.match(rust, /async fn stop_ssh_tunnel\(/);
+  assert.match(rust, /ssh_tunnel::stop\(&ssh_tunnels\)\.await/);
+  assert.match(tunnel, /watch::channel\(false\)/);
+  assert.match(tunnel, /timeout\(STOP_TIMEOUT/);
+  assert.match(tunnel, /task\.abort\(\)/);
 });
 
 test('allows the active connection to be renamed before profile hydration completes', async () => {
@@ -541,6 +559,11 @@ test('acknowledges native authentication immediately after health succeeds', asy
   assert.ok(unlockSource.indexOf('publishAuthenticationSucceededToNativeShell();') < unlockSource.indexOf('showShell();'));
   assert.ok(unlockSource.indexOf('showShell();') < unlockSource.indexOf('await refreshSessions();'));
   assert.match(unlockSource, /if \(state\.token === unlockToken\)/);
+  assert.match(browserApp, /async function fetchHealthWithRetry\(\)/);
+  assert.match(browserApp, /HEALTH_RETRY_ATTEMPTS = 4/);
+  assert.match(browserApp, /async function fetchSessionsWithRetry\(\)/);
+  assert.match(browserApp, /SESSION_RETRY_ATTEMPTS = 3/);
+  assert.match(browserApp, /isTransientHealthError/);
 });
 
 test('disables native autofill and exposes accessible connection controls', async () => {

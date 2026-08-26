@@ -15,12 +15,14 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
-    sync::{Mutex as AsyncMutex, Notify},
+    sync::{watch, Mutex as AsyncMutex},
+    task::{JoinHandle, JoinSet},
     time::{timeout, Duration},
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
+const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const LOOPBACK_HOST: &str = "127.0.0.1";
 
 pub struct SshTunnelManager {
@@ -43,8 +45,8 @@ impl Default for SshTunnelManager {
 
 pub struct ActiveTunnel {
     local_port: u16,
-    shutdown: Arc<Notify>,
-    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    shutdown: watch::Sender<bool>,
+    task: JoinHandle<()>,
 }
 
 #[derive(Debug, Serialize)]
@@ -220,18 +222,30 @@ async fn authenticate_session(
     Ok(())
 }
 
-fn stop_active_tunnel(manager: &SshTunnelManager) -> Result<(), String> {
-    let active = manager
+fn take_active_tunnel(manager: &SshTunnelManager) -> Result<Option<ActiveTunnel>, String> {
+    Ok(manager
         .state
         .lock()
         .map_err(|_| "ssh-tunnel-state-unavailable".to_string())?
         .active
-        .take();
-    if let Some(active) = active {
-        active.cancelled.store(true, Ordering::SeqCst);
-        active.shutdown.notify_waiters();
-    }
+        .take())
+}
+
+async fn stop_active_tunnel(manager: &SshTunnelManager) -> Result<(), String> {
+    let Some(active) = take_active_tunnel(manager)? else {
+        return Ok(());
+    };
+    stop_tunnel(active).await;
     Ok(())
+}
+
+async fn stop_tunnel(active: ActiveTunnel) {
+    let _ = active.shutdown.send(true);
+    let mut task = active.task;
+    if timeout(STOP_TIMEOUT, &mut task).await.is_err() {
+        task.abort();
+        let _ = task.await;
+    }
 }
 
 async fn forward_connection(
@@ -280,31 +294,41 @@ async fn disconnect_sessions(
     }
 }
 
+async fn abort_forwarders(forwarders: &mut JoinSet<()>) {
+    forwarders.abort_all();
+    while forwarders.join_next().await.is_some() {}
+}
+
 async fn run_listener(
     listener: TcpListener,
     session: Arc<AsyncMutex<client::Handle<SshClientHandler>>>,
     remote_port: u16,
-    shutdown: Arc<Notify>,
-    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    mut shutdown: watch::Receiver<bool>,
     upstream: Option<Arc<AsyncMutex<client::Handle<SshClientHandler>>>>,
 ) {
+    let mut forwarders = JoinSet::new();
     loop {
-        if cancelled.load(Ordering::SeqCst) {
+        if *shutdown.borrow() {
+            abort_forwarders(&mut forwarders).await;
             disconnect_sessions(&session, upstream.as_ref()).await;
             break;
         }
         tokio::select! {
-            _ = shutdown.notified() => {
-                disconnect_sessions(&session, upstream.as_ref()).await;
-                break;
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    abort_forwarders(&mut forwarders).await;
+                    disconnect_sessions(&session, upstream.as_ref()).await;
+                    break;
+                }
             }
             accepted = listener.accept() => {
                 let Ok((socket, _)) = accepted else {
+                    abort_forwarders(&mut forwarders).await;
                     disconnect_sessions(&session, upstream.as_ref()).await;
                     break;
                 };
                 let session = Arc::clone(&session);
-                tokio::spawn(forward_connection(socket, session, remote_port));
+                forwarders.spawn(forward_connection(socket, session, remote_port));
             }
         }
     }
@@ -325,7 +349,6 @@ pub async fn start(
     local_port: Option<u16>,
     host_key_fingerprint: Option<String>,
 ) -> Result<SshTunnelStartResult, String> {
-    let generation = manager.generation.fetch_add(1, Ordering::SeqCst) + 1;
     validate_ssh_inputs(&host, &username, &remote_host, remote_port)?;
     if port == 0 {
         return Err("ssh-invalid-port".into());
@@ -366,6 +389,13 @@ pub async fn start(
             return Err("ssh-jump-private-key-required".into());
         }
     }
+
+    let generation = manager.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    // A previous listener may still own the local port and SSH handles after
+    // the JavaScript side has requested a replacement. Drain it before
+    // opening a new session so the first health request cannot race stale
+    // disconnects from the previous app instance.
+    stop_active_tunnel(manager).await?;
 
     let config = Arc::new(russh::client::Config {
         nodelay: true,
@@ -487,44 +517,46 @@ pub async fn start(
         .local_addr()
         .map_err(|error| format!("ssh-local-address-failed:{error}"))?
         .port();
-    let shutdown = Arc::new(Notify::new());
-    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (shutdown, shutdown_receiver) = watch::channel(false);
     let session = Arc::new(AsyncMutex::new(session));
-    tokio::spawn(run_listener(
+    let task = tokio::spawn(run_listener(
         listener,
         Arc::clone(&session),
         remote_port,
-        Arc::clone(&shutdown),
-        Arc::clone(&cancelled),
+        shutdown_receiver,
         upstream.clone(),
     ));
+    let mut candidate = Some(ActiveTunnel {
+        local_port,
+        shutdown,
+        task,
+    });
 
-    let (installed, previous) = {
-        let mut state = manager
-            .state
-            .lock()
-            .map_err(|_| "ssh-tunnel-state-unavailable".to_string())?;
-        if manager.generation.load(Ordering::SeqCst) != generation {
-            (false, None)
-        } else {
-            (
-                true,
-                state.active.replace(ActiveTunnel {
-                    local_port,
-                    shutdown: Arc::clone(&shutdown),
-                    cancelled: Arc::clone(&cancelled),
-                }),
-            )
+    let (candidate, previous, state_error) = match manager.state.lock() {
+        Ok(mut state) => {
+            if manager.generation.load(Ordering::SeqCst) != generation {
+                (candidate, None, None)
+            } else {
+                (
+                    None,
+                    state
+                        .active
+                        .replace(candidate.take().expect("candidate tunnel")),
+                    None,
+                )
+            }
         }
+        Err(_) => (candidate, None, Some("ssh-tunnel-state-unavailable")),
     };
-    if !installed {
-        cancelled.store(true, Ordering::SeqCst);
-        shutdown.notify_waiters();
-        return Err("ssh-tunnel-superseded".into());
+    if let Some(candidate) = candidate {
+        stop_tunnel(candidate).await;
+        return Err(state_error.unwrap_or("ssh-tunnel-superseded").into());
+    }
+    if let Some(error) = state_error {
+        return Err(error.into());
     }
     if let Some(previous) = previous {
-        previous.cancelled.store(true, Ordering::SeqCst);
-        previous.shutdown.notify_waiters();
+        stop_tunnel(previous).await;
     }
 
     Ok(SshTunnelStartResult {
@@ -534,9 +566,9 @@ pub async fn start(
     })
 }
 
-pub fn stop(manager: &SshTunnelManager) -> Result<(), String> {
+pub async fn stop(manager: &SshTunnelManager) -> Result<(), String> {
     manager.generation.fetch_add(1, Ordering::SeqCst);
-    stop_active_tunnel(manager)
+    stop_active_tunnel(manager).await
 }
 
 pub fn status(manager: &SshTunnelManager) -> Result<Option<u16>, String> {

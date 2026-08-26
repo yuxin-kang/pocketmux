@@ -73,9 +73,13 @@ const LATE_CREDENTIAL_RECOVERY_MAX_ATTEMPTS = 3;
 const SSH_SECRET_WRITE_RETRIES = 2;
 const SSH_SECRET_WRITE_RETRY_DELAY_MS = 150;
 const CREDENTIAL_DRAIN_TIMEOUT_MS = 10000;
+const SSH_RESTORE_RETRY_ATTEMPTS = 2;
+const SSH_RESTORE_RETRY_DELAY_MS = 1000;
+const REMOTE_BACKGROUND_RECONNECT_THRESHOLD_MS = 10000;
 const REMOTE_LANGUAGE_MESSAGE_TYPE = 'pocketmux:language';
 const REMOTE_AUTH_REQUIRED_MESSAGE_TYPE = 'pocketmux:authentication-required';
 const REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE = 'pocketmux:authentication-succeeded';
+const REMOTE_RECONNECT_REQUEST_MESSAGE_TYPE = 'pocketmux:reconnect-request';
 const REMOTE_FILE_ACTION_REQUEST_MESSAGE_TYPE = 'pocketmux:file-action-request';
 const REMOTE_FILE_ACTION_RESULT_MESSAGE_TYPE = 'pocketmux:file-action-result';
 const NATIVE_FILE_ACTION_MAX_BYTES = 50 * 1024 * 1024;
@@ -222,6 +226,8 @@ let lateCredentialRecoveryStarted = false;
 let lateCredentialRecoveryAttempts = 0;
 let exitRequested = false;
 let sshStopPromise = Promise.resolve();
+let remoteReconnectPromise = null;
+let remoteBackgroundedAt = 0;
 let sshAttemptSequence = 0;
 
 function authDebugDetailsText(details) {
@@ -1173,6 +1179,12 @@ function receiveRemoteLanguage(event) {
     handleRemoteFileAction(event, attempt);
     return;
   }
+  if (event.data?.type === REMOTE_RECONNECT_REQUEST_MESSAGE_TYPE) {
+    if (!attempt || !connectionValidations.isCurrent(attempt.validationAttempt)) return;
+    authDebug('remote-reconnect-request', { serverUrl: attempt.connection.serverUrl });
+    void requestRemoteReconnect({ force: true });
+    return;
+  }
   if (event.data?.type === REMOTE_AUTHENTICATION_SUCCEEDED_MESSAGE_TYPE) {
     if (!attempt || !connectionValidations.isCurrent(attempt.validationAttempt)) return;
     if (attempt.authentication.webAuthenticated && attempt.persistenceState !== 'failed') return;
@@ -1703,6 +1715,45 @@ function sshErrorText(error) {
   return String(error?.message || error || 'ssh-unavailable');
 }
 
+function isRetryableSshRestoreError(error) {
+  const raw = sshErrorText(error);
+  if (!raw.startsWith('ssh-')) return false;
+  const terminalPrefixes = [
+    'ssh-attempt-superseded',
+    'ssh-password-required',
+    'ssh-private-key-required',
+    'ssh-jump-password-required',
+    'ssh-jump-private-key-required',
+    'ssh-password-persistence',
+    'ssh-private-key-persistence',
+    'ssh-jump-password-persistence',
+    'ssh-jump-private-key-persistence',
+    'ssh-host-key-',
+    'ssh-target-host-key-',
+    'ssh-jump-host-key-',
+    'ssh-auth-',
+    'ssh-target-auth-',
+    'ssh-jump-auth-',
+    'ssh-private-key-invalid',
+    'ssh-jump-private-key-invalid',
+    'ssh-invalid-',
+    'ssh-remote-target-',
+  ];
+  if (terminalPrefixes.some((prefix) => raw.startsWith(prefix))) return false;
+  return [
+    'ssh-unavailable',
+    'ssh-secret-unavailable',
+    'ssh-connect-timeout',
+    'ssh-connect-failed',
+    'ssh-target-connect-timeout',
+    'ssh-target-connect-failed',
+    'ssh-jump-target-connect-timeout',
+    'ssh-jump-target-connect-failed',
+    'ssh-local-bind-failed',
+    'ssh-local-address-failed',
+  ].some((prefix) => raw.startsWith(prefix));
+}
+
 function recoveryFocusForError(error) {
   const raw = sshErrorText(error);
   return {
@@ -2215,31 +2266,47 @@ async function restoreMostRecentConnection() {
   }
   const { profile, token } = candidate;
   authDebug('restore-start', { serverUrl: profile.serverUrl });
-  try {
-    window.history.replaceState({ screen: 'remote' }, '', '#connected');
-    if (isSshProfile(profile)) {
-      return await navigateToSshProfile(profile, token, {}, { pushHistory: false });
+  let lastError = null;
+  window.history.replaceState({ screen: 'remote' }, '', '#connected');
+  for (let attempt = 0; attempt < SSH_RESTORE_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      if (isSshProfile(profile)) {
+        return await navigateToSshProfile(profile, token, {}, { pushHistory: false });
+      }
+      return await navigateToServer(profile.serverUrl, token, { pushHistory: false });
+    } catch (error) {
+      lastError = error;
+      if (sshErrorText(error) === 'ssh-attempt-superseded') return false;
+      if (
+        !isSshProfile(profile)
+        || attempt + 1 >= SSH_RESTORE_RETRY_ATTEMPTS
+        || !isRetryableSshRestoreError(error)
+      ) break;
+      authDebug('restore-retry-scheduled', {
+        serverUrl: profile.serverUrl,
+        attempt: attempt + 1,
+        error: sshErrorText(error),
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, SSH_RESTORE_RETRY_DELAY_MS));
     }
-    return await navigateToServer(profile.serverUrl, token, { pushHistory: false });
-  } catch (error) {
-    if (sshErrorText(error) === 'ssh-attempt-superseded') return false;
-    window.history.replaceState(
-      { screen: 'launcher' },
-      '',
-      `${window.location.pathname}${window.location.search}`,
-    );
-    authDebug('restore-failed', {
-      serverUrl: profile.serverUrl,
-      error: sshErrorText(error),
-    });
-    showConnections({
-      serverUrl: profile.serverUrl,
-      message: localizedError(error),
-      preserveSavedToken: sshErrorText(error) !== 'missing-token',
-      ...recoveryFocusForError(error),
-    });
-    return false;
   }
+  const error = lastError || new Error('ssh-unavailable');
+  window.history.replaceState(
+    { screen: 'launcher' },
+    '',
+    `${window.location.pathname}${window.location.search}`,
+  );
+  authDebug('restore-failed', {
+    serverUrl: profile.serverUrl,
+    error: sshErrorText(error),
+  });
+  showConnections({
+    serverUrl: profile.serverUrl,
+    message: localizedError(error),
+    preserveSavedToken: sshErrorText(error) !== 'missing-token',
+    ...recoveryFocusForError(error),
+  });
+  return false;
 }
 
 async function switchConnection(serverUrl) {
@@ -2329,23 +2396,61 @@ async function exitNativeApp() {
 }
 
 async function reloadRemoteConnection() {
-  if (!remoteSession?.targetUrl) return;
+  if (!remoteSession?.targetUrl) return false;
+  const serverUrl = remoteSession.serverUrl;
   if (isSshProfile(remoteSession.profile)) {
     const token = savedTokenForServer(remoteSession.serverUrl);
     try {
       await navigateToSshProfile(remoteSession.profile, token, {}, { pushHistory: false });
+      return true;
     } catch (error) {
-      setError(localizedError(error));
+      const message = localizedError(error);
+      setError(message);
+      if (remoteSession?.serverUrl === serverUrl) {
+        setRemoteState('failed');
+        elements.remoteNotice.textContent = message;
+      }
+      return false;
     }
-    return;
   }
   const connection = buildRemoteConnection(remoteSession.targetUrl);
   elements.remoteNotice.textContent = text('remote.validatingToken');
   try {
     await navigateToServer(connection.serverUrl, connection.token, { pushHistory: false });
+    return true;
   } catch (error) {
-    setError(localizedError(error));
+    const message = localizedError(error);
+    setError(message);
+    if (remoteSession?.serverUrl === serverUrl) {
+      setRemoteState('failed');
+      elements.remoteNotice.textContent = message;
+    }
+    return false;
   }
+}
+
+function requestRemoteReconnect({ force = false } = {}) {
+  if (exitRequested || !remoteSession?.targetUrl) return Promise.resolve(false);
+  if (remoteReconnectPromise) return remoteReconnectPromise;
+  if (!force && elements.remoteShell.classList.contains('is-hidden')) return Promise.resolve(false);
+
+  const serverUrl = remoteSession.serverUrl;
+  remoteReconnectPromise = (async () => {
+    authDebug('remote-reconnect-start', { serverUrl });
+    elements.remoteNotice.textContent = text('remote.validatingToken');
+    const restored = await reloadRemoteConnection();
+    authDebug(restored ? 'remote-reconnect-complete' : 'remote-reconnect-failed', { serverUrl });
+    return restored;
+  })().catch((error) => {
+    authDebug('remote-reconnect-failed', { serverUrl, error: String(error) });
+    if (remoteSession?.serverUrl === serverUrl) {
+      elements.remoteNotice.textContent = localizedError(error);
+    }
+    return false;
+  }).finally(() => {
+    remoteReconnectPromise = null;
+  });
+  return remoteReconnectPromise;
 }
 
 function recentServerRow(serverUrl) {
@@ -2460,7 +2565,7 @@ elements.authDiagnosticsClear?.addEventListener('click', () => {
 });
 
 renderAuthDiagnostics();
-authDebug('build-info', { build: '1.3.0' });
+authDebug('build-info', { build: '1.3.1' });
 
 elements.form.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -2585,14 +2690,14 @@ elements.connectionNameDialog.addEventListener('close', () => {
 });
 
 elements.refreshRemote.addEventListener('click', () => {
-  void reloadRemoteConnection();
+  void requestRemoteReconnect({ force: true });
 });
 
 elements.addConnection.addEventListener('click', addConnection);
 elements.exitApp.addEventListener('click', exitNativeApp);
 
 elements.retryRemote.addEventListener('click', () => {
-  void reloadRemoteConnection();
+  void requestRemoteReconnect({ force: true });
 });
 
 elements.remoteMenuToggle.addEventListener('click', (event) => {
@@ -2663,6 +2768,25 @@ window.addEventListener('popstate', () => {
     void navigateToServer(connection.serverUrl, connection.token, { pushHistory: false });
   } else {
     showConnections();
+  }
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    remoteBackgroundedAt = Date.now();
+    return;
+  }
+  if (!remoteBackgroundedAt) return;
+  const hiddenFor = Date.now() - remoteBackgroundedAt;
+  remoteBackgroundedAt = 0;
+  if (hiddenFor < REMOTE_BACKGROUND_RECONNECT_THRESHOLD_MS) return;
+  void requestRemoteReconnect();
+});
+
+window.addEventListener('pageshow', () => {
+  if (!document.hidden && remoteSession && remoteBackgroundedAt) {
+    remoteBackgroundedAt = 0;
+    void requestRemoteReconnect({ force: true });
   }
 });
 
