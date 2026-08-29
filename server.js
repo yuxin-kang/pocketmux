@@ -1068,8 +1068,17 @@ function outboxApiError(error, id = '') {
 }
 
 function streamOutboxFile(res, file) {
-  const safeName = String(file.name || 'file').replace(/[\r\n"]/g, '_');
-  const disposition = `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(safeName)}`;
+  // RFC 6266's legacy filename parameter is an ISO-8859-1/ASCII header
+  // value. Passing a display name with CJK (or any other non-ASCII) bytes to
+  // Node's response headers throws ERR_INVALID_CHAR and turns an otherwise
+  // valid inbox download into a generic 500. Keep an ASCII fallback for old
+  // clients, while filename* preserves the original UTF-8 display name.
+  const safeName = String(file.name || 'file')
+    .replace(/[\\/\r\n"\u0000-\u001f\u007f]/g, '_')
+    .trim()
+    .slice(0, 180) || 'file';
+  const asciiFallback = safeName.replace(/[^\x20-\x7e]/g, '_') || 'file';
+  const disposition = `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(safeName)}`;
   res.writeHead(200, {
     'Content-Type': file.contentType,
     'Content-Length': file.size,

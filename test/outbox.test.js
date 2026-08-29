@@ -92,3 +92,29 @@ test('serves the authenticated file inbox and supports download, acknowledgement
   assert.equal(deleted.status, 200);
   assert.equal((await fetch(`${base}/api/inbox`, { headers }).then((response) => response.json())).files.length, 0);
 });
+
+test('downloads inbox files with non-ASCII names using an ASCII fallback header', async (t) => {
+  const directory = await fsp.mkdtemp(path.join(os.tmpdir(), 'pocketmux-inbox-unicode-'));
+  t.after(() => fsp.rm(directory, { recursive: true, force: true }));
+  const source = path.join(directory, 'source.pdf');
+  await fsp.writeFile(source, '%PDF-1.7\n');
+  const staged = await stageOutboxFile(directory, source, {
+    name: 'Robo Collector项目面试讲解文档.pdf',
+  });
+  const instance = createRemoteToolServer({
+    token: 'unicode-inbox-token',
+    tmuxRunner: async () => '',
+    outboxDirectory: directory,
+  });
+  const base = await listen(instance.server);
+  t.after(() => new Promise((resolve) => instance.server.close(resolve)));
+
+  const response = await fetch(`${base}/api/inbox/${staged.id}`, {
+    headers: { Authorization: 'Bearer unicode-inbox-token' },
+  });
+  assert.equal(response.status, 200);
+  const disposition = response.headers.get('content-disposition') || '';
+  assert.match(disposition, /filename="Robo Collector.*\.pdf"/);
+  assert.match(disposition, /filename\*=UTF-8''Robo%20Collector/);
+  assert.equal(await response.text(), '%PDF-1.7\n');
+});
