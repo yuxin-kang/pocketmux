@@ -4,7 +4,7 @@
 
 - Status: Active
 - Last refreshed: 2026-08-13
-- Product surfaces: Windows and Android native clients
+- Product surfaces: Windows, Android, iPhone, and iPad native clients
 - Evidence: root Pocketmux design, current browser UI, shared Pocketmux icon assets, the existing token URL authentication flow, and the 2026-08-13 Android IME-obscured composer screenshot
 - Hard boundary: native work must not modify the existing root web application
 
@@ -15,7 +15,7 @@ Pocketmux Native uses the existing Pocketmux identity: dark terminal surfaces, c
 ## Product goals
 
 - Preserve every feature of the existing browser interface.
-- Make connecting from Windows or Android quick and recoverable.
+- Make connecting from Windows, Android, iPhone, or iPad quick and recoverable.
 - Keep a recoverable but normally hidden native route back to saved connections after opening a server.
 - Reuse saved connection credentials until the server explicitly rejects them, without exposing native privileges to remote content.
 
@@ -71,12 +71,12 @@ Pocketmux Native uses the existing Pocketmux identity: dark terminal surfaces, c
 
 ## Responsive behavior
 
-- The launcher supports 360px Android widths and resizable Windows windows.
+- The launcher supports compact Android/iPhone widths, iPad layouts, and resizable Windows windows.
 - Cards collapse from two columns to one below 760px.
 - The remote shell occupies the complete dynamic viewport while the keyboard is hidden; while the Android IME is visible, the top-level shell constrains the sandboxed remote frame to the WebView area above the keyboard and restores the complete viewport when the IME closes.
 - The drawer overlays rather than resizes the remote page and is closed by its close button, backdrop, Escape, or a swipe begun outside interactive controls.
 - Drawer gestures must never capture taps that begin on buttons or other interactive descendants.
-- Safe-area insets protect Android display cutouts and system gesture areas.
+- Safe-area insets protect Android and iOS display cutouts and system gesture areas.
 - The cross-origin remote frame must not infer the Android keyboard from its own `visualViewport`; the local top-level shell owns IME viewport adaptation.
 
 ## Interaction states
@@ -85,7 +85,7 @@ Pocketmux Native uses the existing Pocketmux identity: dark terminal surfaces, c
 - Invalid: retain user input and show a localized inline error.
 - Public HTTP: reject the connection and require HTTPS.
 - Private HTTP on Windows: allow it with a clear trusted-network warning.
-- HTTP on Android: reject it and direct the user to an HTTPS tunnel.
+- HTTP on Android or iOS: reject it and direct the user to HTTPS or the built-in SSH tunnel.
 - Connecting: cover the embedded page while its token bootstrap settles; Native bootstrap hides the remote web login form so it cannot flash as an intermediate step.
 - Connected: reveal only the authenticated full-screen remote page; keep host, refresh, connection choices, Switch, and Exit controls in the hidden drawer. Reuse the launcher language choice without duplicating the selector.
 - Switching: saved connections validate their token through the Native layer and switch directly. A completed validation or a source/origin-checked remote authentication-success event persists that server's token even if the user has already switched to another server; only the current connection's visible loading/error state is operation-scoped. Only an authenticated Pocketmux HTTP 401 response clears the rejected token and returns to the launcher with the server URL prefilled; proxy/tunnel failures, HTTP 403, and other server errors retain the token.
@@ -106,11 +106,11 @@ Pocketmux Native uses the existing Pocketmux identity: dark terminal surfaces, c
 - The local launcher remains the top-level document; the remote site loads in a sandboxed cross-origin frame.
 - Android publishes only numeric top-level visible-height/inset geometry to the local launcher. The launcher combines that geometry with its own `visualViewport`, constrains the remote frame, and exposes no new command or credential capability to remote content.
 - The top-level local launcher may expose Tauri Core only to invoke the registered app lifecycle, validation, and credential commands; the capability set stays at `core:default` and the cross-origin sandboxed remote frame cannot access the parent API.
-- Persisted connection metadata lives in the Native launcher's local storage without tokens and is written before cancellable background validation begins. Validated tokens use Windows Credential Manager or Android Keystore-backed credential storage; removing a connection invalidates pending validation for that server and deletes the matching credential.
+- Persisted connection metadata lives in the Native launcher's local storage without tokens and is written before cancellable background validation begins. Validated tokens use Windows Credential Manager, Android Keystore-backed credential storage, or the iOS Keychain; removing a connection invalidates pending validation for that server and deletes the matching credential.
 - Token validation sends a Bearer token only to the selected server's same-origin, base-path-preserving `/api/health` endpoint, does not follow redirects, and accepts success only when the response carries the Pocketmux product/protocol marker. Only HTTP 401 is a confirmed credential rejection.
 - Parent CSP permits HTTP(S) frames but no arbitrary network requests, remote scripts, objects, or native command bridge.
 - The reserved `tauri.localhost` host and any target equal to the launcher origin are rejected before framing, preserving the cross-origin sandbox boundary.
-- Android disables cleartext transport at both the launcher policy and manifest layers. Windows retains private/local HTTP support for trusted development networks.
+- Android and iOS reject user-entered cleartext targets. Their native SSH transports receive a narrowly scoped loopback HTTP endpoint, while Windows retains private/local HTTP support for trusted development networks.
 - Windows browser-level general autofill is disabled; both connection fields also opt out of HTML autofill.
 - Validation includes pure URL/storage/viewport tests, UI/security contract tests, JavaScript syntax checks, Rust checks, Tauri configuration validation, Android IME instrumentation when a device is available, and confirmation that root web behavior remains unchanged outside the documented Native viewport contract.
 

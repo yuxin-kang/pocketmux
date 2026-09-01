@@ -8,6 +8,11 @@ test('keeps missing-token errors distinct from unsupported URL errors', () => {
   assert.equal(errorMessageKey(new Error('unsupported-url')), 'error.unsupportedUrl');
 });
 
+test('maps mobile cleartext errors and the legacy Android code to the mobile message', () => {
+  assert.equal(errorMessageKey(new Error('mobile-http')), 'error.mobileHttp');
+  assert.equal(errorMessageKey(new Error('android-http')), 'error.mobileHttp');
+});
+
 test('uses a neutral message for unexpected runtime errors', () => {
   assert.equal(errorMessageKey(new TypeError('unexpected')), 'error.unexpected');
 });

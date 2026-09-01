@@ -31,10 +31,14 @@
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Control remote tmux sessions from Pocketmux",
-    "longDescription": "Pocketmux connects to a self-hosted Pocketmux server and opens its existing web interface in a native Windows or Android shell.",
+    "longDescription": "Pocketmux connects to a self-hosted Pocketmux server and opens its existing web interface in a native Windows, Android, iPhone, or iPad shell.",
     "android": {
       "minSdkVersion": 24,
       "versionCode": 1035
+    },
+    "iOS": {
+      "minimumSystemVersion": "14.0",
+      "bundleVersion": "1035"
     },
     "icon": [
       "icons/32x32.png",

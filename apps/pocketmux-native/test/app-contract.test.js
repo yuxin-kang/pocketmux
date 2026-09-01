@@ -88,8 +88,9 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   const capability = JSON.parse(capabilityText);
 
   assert.match(html, /连接后会直接打开原有网页界面/);
-  assert.match(html, /styles\.css\?v=20260825-ssh-persistence-1-3-0/);
-  assert.match(html, /main\.js\?v=20260825-ssh-persistence-1-3-0/);
+  assert.match(html, /Windows · Android · iOS/);
+  assert.match(html, /styles\.css\?v=20260829-ios-1/);
+  assert.match(html, /main\.js\?v=20260829-ios-1/);
   assert.match(html, /id="auth-diagnostics-card"[^>]*\shidden/);
   assert.match(html, /id="remote-menu-toggle"[^>]+aria-expanded="false"[\s\S]*?<span aria-hidden="true">›<\/span>/);
   assert.match(html, /id="remote-drawer"[^>]+aria-hidden="true"[^>]+inert/);
@@ -235,6 +236,7 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(main, /REMOTE_FILE_ACTION_REQUEST_MESSAGE_TYPE = 'pocketmux:file-action-request'/);
   assert.match(main, /window\.PocketmuxFiles/);
   assert.match(main, /base64FromBytes\(bytes\)/);
+  assert.match(main, /invoke\('save_received_file'/);
   assert.match(main, /initializeConnections\(\{/);
   assert.match(main, /isCurrent: \(operation\) => connectionOperations\.isCurrent\(operation\)/);
   assert.match(main, /applyCompletedState: async \(\{ hydration, migrated \}\)/);
@@ -250,6 +252,8 @@ test('keeps a local native shell around the unmodified remote Pocketmux interfac
   assert.match(browserApp, /NATIVE_FILE_ACTION_REQUEST_MESSAGE_TYPE = 'pocketmux:file-action-request'/);
   assert.match(browserApp, /requestNativeFileAction\(file, blob, 'open'\)/);
   assert.match(browserApp, /requestNativeFileAction\(file, blob, 'save'\)/);
+  assert.match(browserApp, /NATIVE_FILE_ACTION_TIMEOUT_MS = 20000/);
+  assert.match(browserApp, /native-file-preview-web/);
   assert.match(browserApp, /inbox\.pdfNativeFallback/);
   assert.match(browserApp, /INBOX_IMAGE_CONTENT_TYPES/);
   assert.match(browserApp, /INBOX_VIDEO_CONTENT_TYPES/);
@@ -482,7 +486,30 @@ test('keeps all keyring operations off the synchronous Tauri IPC thread', async 
   assert.match(rust, /async fn set_connection_token\(/);
   assert.match(rust, /async fn delete_connection_token\(/);
   assert.match(rust, /async fn reject_connection_token\(/);
-  assert.equal((rust.match(/tauri::async_runtime::spawn_blocking/g) || []).length, 7);
+  assert.equal((rust.match(/tauri::async_runtime::spawn_blocking/g) || []).length, 8);
+});
+
+test('declares a constrained iPhone and iPad bundle configuration', async () => {
+  const [configText, plist, packageText, rust] = await Promise.all([
+    readFile(path.join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'),
+    readFile(path.join(root, 'src-tauri', 'Info.ios.plist'), 'utf8'),
+    readFile(path.join(root, 'package.json'), 'utf8'),
+    readFile(path.join(root, 'src-tauri', 'src', 'lib.rs'), 'utf8'),
+  ]);
+  const config = JSON.parse(configText);
+  const packageJson = JSON.parse(packageText);
+
+  assert.equal(config.bundle.iOS.minimumSystemVersion, '14.0');
+  assert.equal(config.bundle.iOS.bundleVersion, '1035');
+  assert.equal(packageJson.scripts['ios:init'], 'tauri ios init');
+  assert.equal(packageJson.scripts['ios:dev'], 'tauri ios dev');
+  assert.equal(packageJson.scripts['ios:build'], 'tauri ios build');
+  assert.match(plist, /<key>NSAllowsLocalNetworking<\/key>\s*<true\/>/);
+  assert.match(plist, /<key>UIFileSharingEnabled<\/key>\s*<true\/>/);
+  assert.match(plist, /<key>LSSupportsOpeningDocumentsInPlace<\/key>\s*<true\/>/);
+  assert.doesNotMatch(plist, /NSAllowsArbitraryLoads/);
+  assert.match(rust, /async fn save_received_file\(/);
+  assert.match(rust, /save_received_file,/);
 });
 
 test('initializes Android ndk-context before keyring access', async () => {

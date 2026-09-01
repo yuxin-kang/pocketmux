@@ -1,7 +1,8 @@
 const ERROR_MESSAGE_KEYS = new Map([
   ['invalid-url', 'error.invalidUrl'],
   ['public-http', 'error.publicHttp'],
-  ['android-http', 'error.androidHttp'],
+  ['mobile-http', 'error.mobileHttp'],
+  ['android-http', 'error.mobileHttp'],
   ['native-origin', 'error.nativeOrigin'],
   ['missing-token', 'error.missingToken'],
   ['unsupported-url', 'error.unsupportedUrl'],

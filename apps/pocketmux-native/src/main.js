@@ -30,6 +30,7 @@ import {
 } from './floating-handle.js';
 import { messages, normalizeLanguage } from './i18n.js';
 import { createNativeShellSession } from './native-shell-session.js';
+import { getPlatformPolicy } from './platform.js';
 import {
   mergeCredentialReadResults,
   shouldRetryCredentialRead,
@@ -108,9 +109,7 @@ const NATIVE_FILE_ACTION_TYPES = new Set([
   'text/plain',
 ]);
 const NATIVE_VIEWPORT_EVENT_TYPE = 'pocketmux:native-viewport';
-const connectionPolicy = {
-  allowPrivateHttp: !/\bAndroid\b/i.test(window.navigator.userAgent),
-};
+const connectionPolicy = getPlatformPolicy(window.navigator);
 
 const elements = {
   appFrame: document.querySelector('.app-frame'),
@@ -1072,6 +1071,12 @@ function applyLanguage() {
   document.querySelectorAll('[data-i18n-title]').forEach((element) => {
     element.title = text(element.dataset.i18nTitle);
   });
+  const exitActionKey = connectionPolicy.isIOS
+    ? 'remote.disconnectAction'
+    : 'remote.exitAction';
+  elements.exitApp.querySelector('[data-i18n]')?.replaceChildren(text(exitActionKey));
+  elements.exitApp.setAttribute('aria-label', text(exitActionKey));
+  elements.exitApp.title = text(exitActionKey);
   elements.languageButtons.forEach((button) => {
     button.setAttribute('aria-pressed', String(button.dataset.language === language));
   });
@@ -1127,7 +1132,7 @@ function postNativeFileActionResult(event, requestId, result) {
   }, event.origin);
 }
 
-function handleRemoteFileAction(event, attempt) {
+async function handleRemoteFileAction(event, attempt) {
   const requestId = String(event.data?.requestId || '');
   if (!requestId || !attempt || !connectionValidations.isCurrent(attempt.validationAttempt)) return;
   if (!attempt.authentication.webAuthenticated) {
@@ -1149,20 +1154,43 @@ function handleRemoteFileAction(event, attempt) {
     return;
   }
   const bridge = window.PocketmuxFiles;
-  if (!bridge || typeof bridge.saveFile !== 'function' || !shellSessionToken) {
+  if (bridge && typeof bridge.saveFile === 'function' && shellSessionToken) {
+    try {
+      const rawResult = bridge.saveFile(
+        shellSessionToken,
+        base64FromBytes(bytes),
+        nativeFileName(event.data.name),
+        contentType,
+        action === 'open',
+      );
+      let result = {};
+      try { result = JSON.parse(rawResult); } catch { /* no-op */ }
+      postNativeFileActionResult(event, requestId, {
+        ok: result.ok === true,
+        code: result.code || (result.ok === true ? 'saved' : 'native-file-save-failed'),
+      });
+    } catch (error) {
+      authDebug('native-file-action-failed', { error: String(error) });
+      postNativeFileActionResult(event, requestId, { ok: false, code: 'native-file-save-failed' });
+    }
+    return;
+  }
+  if (!connectionPolicy.isIOS) {
     postNativeFileActionResult(event, requestId, { ok: false, code: 'native-file-bridge-unavailable' });
     return;
   }
+  if (action === 'open') {
+    postNativeFileActionResult(event, requestId, { ok: false, code: 'native-file-preview-web' });
+    return;
+  }
   try {
-    const rawResult = bridge.saveFile(
-      shellSessionToken,
-      base64FromBytes(bytes),
-      nativeFileName(event.data.name),
+    const invoke = await nativeCredentialInvokeWithRetry();
+    if (!invoke) throw new Error('native file bridge unavailable');
+    const result = await invoke('save_received_file', {
+      dataBase64: base64FromBytes(bytes),
+      name: nativeFileName(event.data.name),
       contentType,
-      action === 'open',
-    );
-    let result = {};
-    try { result = JSON.parse(rawResult); } catch { /* no-op */ }
+    });
     postNativeFileActionResult(event, requestId, {
       ok: result.ok === true,
       code: result.code || (result.ok === true ? 'saved' : 'native-file-save-failed'),
@@ -1176,7 +1204,7 @@ function handleRemoteFileAction(event, attempt) {
 function receiveRemoteLanguage(event) {
   const attempt = connectionAttemptForMessage(event);
   if (event.data?.type === REMOTE_FILE_ACTION_REQUEST_MESSAGE_TYPE) {
-    handleRemoteFileAction(event, attempt);
+    void handleRemoteFileAction(event, attempt);
     return;
   }
   if (event.data?.type === REMOTE_RECONNECT_REQUEST_MESSAGE_TYPE) {
@@ -1255,7 +1283,7 @@ function renderSecurityWarning() {
   try {
     connection = buildRemoteConnection(elements.serverUrl.value, elements.accessToken.value);
   } catch (error) {
-    if (error?.message === 'android-http') {
+    if (error?.message === 'mobile-http' || error?.message === 'android-http') {
       elements.warning.textContent = text('connect.httpWarning');
       elements.warning.classList.remove('is-hidden');
       return;
@@ -2386,6 +2414,12 @@ async function exitNativeApp() {
       return;
     }
     await invoke('exit_app');
+    if (connectionPolicy.isIOS) {
+      const serverUrl = remoteSession?.serverUrl;
+      exitRequested = false;
+      elements.exitApp.disabled = false;
+      showConnections({ serverUrl, preserveSavedToken: true });
+    }
   } catch {
     exitRequested = false;
     elements.exitApp.disabled = false;

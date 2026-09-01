@@ -60,6 +60,7 @@
   const NATIVE_RECONNECT_REQUEST_MESSAGE_TYPE = 'pocketmux:reconnect-request';
   const NATIVE_FILE_ACTION_REQUEST_MESSAGE_TYPE = 'pocketmux:file-action-request';
   const NATIVE_FILE_ACTION_RESULT_MESSAGE_TYPE = 'pocketmux:file-action-result';
+  const NATIVE_FILE_ACTION_TIMEOUT_MS = 20000;
   const nativeFileActionRequests = new Map();
   let nativeFileActionSequence = 0;
   const MESSAGE_INPUT_VIEWPORT_MARGIN = 12;
@@ -272,7 +273,7 @@
       const timeout = window.setTimeout(() => {
         nativeFileActionRequests.delete(requestId);
         resolve({ ok: false, unavailable: true });
-      }, 1800);
+      }, NATIVE_FILE_ACTION_TIMEOUT_MS);
       nativeFileActionRequests.set(requestId, {
         resolve: (result) => {
           window.clearTimeout(timeout);
@@ -536,7 +537,7 @@
           closeFilePreviewDialog();
           return;
         }
-        if (nativeBootstrap) {
+        if (nativeBootstrap && nativeResult.code !== 'native-file-preview-web') {
           elements.filePreviewBody.append(
             makeElement('p', 'file-preview-fallback', t('inbox.pdfNativeFallback')),
           );

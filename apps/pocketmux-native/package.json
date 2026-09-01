@@ -2,13 +2,13 @@
   "name": "pocketmux-native",
   "private": true,
   "version": "1.3.1",
-  "description": "Pocketmux native connection shell for Windows and Android",
+  "description": "Pocketmux native connection shell for Windows, Android, iPhone, and iPad",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "check": "node --check src/auth-diagnostics.js && node --check src/connection.js && node --check src/connection-initialization.js && node --check src/connection-navigation.js && node --check src/connection-operations.js && node --check src/connection-switch.js && node --check src/connection-validation.js && node --check src/connection-authentication.js && node --check src/credential-migration.js && node --check src/credential-read.js && node --check src/drawer-gesture.js && node --check src/error-state.js && node --check src/floating-handle.js && node --check src/i18n.js && node --check src/native-shell-session.js && node --check src/rejected-credential.js && node --check src/remote-viewport.js && node --check src/storage.js && node --check src/remote-session.js && node --check src/validated-credential.js && node --check src/main.js",
+    "check": "node --check src/auth-diagnostics.js && node --check src/connection.js && node --check src/connection-initialization.js && node --check src/connection-navigation.js && node --check src/connection-operations.js && node --check src/connection-switch.js && node --check src/connection-validation.js && node --check src/connection-authentication.js && node --check src/credential-migration.js && node --check src/credential-read.js && node --check src/drawer-gesture.js && node --check src/error-state.js && node --check src/floating-handle.js && node --check src/i18n.js && node --check src/native-shell-session.js && node --check src/platform.js && node --check src/rejected-credential.js && node --check src/remote-viewport.js && node --check src/storage.js && node --check src/remote-session.js && node --check src/validated-credential.js && node --check src/main.js",
     "test": "node --test",
     "dev": "tauri dev",
     "build": "tauri build",
@@ -16,6 +16,10 @@
     "android:dev": "tauri android dev",
     "android:icons": "tauri icon src-tauri/icon-source/icon-manifest.json -o src-tauri/icons && node scripts/prepare-android-icon-layers.js && node scripts/sync-android-icons.js",
     "android:build": "npm run android:icons && tauri android build",
+    "ios:init": "tauri ios init",
+    "ios:dev": "tauri ios dev",
+    "ios:build": "tauri ios build",
+    "ios:build:appstore": "tauri ios build -- --export-method app-store-connect",
     "windows:build": "tauri build --bundles nsis,msi",
     "tauri": "tauri"
   },

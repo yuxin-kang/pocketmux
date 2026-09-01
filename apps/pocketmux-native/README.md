@@ -1,13 +1,13 @@
 # Pocketmux Native
 
-Pocketmux Native is a lightweight Tauri 2 client for Windows and Android. It connects to a self-hosted Pocketmux server and displays the complete existing web interface inside a persistent native shell, with visible connection switching and refresh controls.
+Pocketmux Native is a lightweight Tauri 2 client for Windows, Android, iPhone, and iPad. It connects to a self-hosted Pocketmux server and displays the complete existing web interface inside a persistent native shell, with visible connection switching and refresh controls.
 
 The native app is additive: it does not replace or modify the browser version of Pocketmux.
 
 ## Security boundary
 
-- Only validated access tokens are retained, using Windows Credential Manager or Android Keystore-backed credential storage. Local WebView storage contains only normalized server metadata and display names.
-- Android requires HTTPS for direct web addresses. The SSH mode uses a loopback-only local endpoint and forwards to Pocketmux on the SSH server's `127.0.0.1` without exposing that port publicly.
+- Only validated access tokens are retained, using Windows Credential Manager, Android Keystore-backed storage, or the iOS Keychain. Local WebView storage contains only normalized server metadata and display names.
+- Android and iOS require HTTPS for direct web addresses. The SSH mode uses a loopback-only local endpoint and forwards to Pocketmux on the SSH server's `127.0.0.1` without exposing that port publicly.
 - Remote content runs in a sandboxed cross-origin frame and does not receive the global Tauri API.
 - The reserved Tauri application host and any URL matching the launcher origin are rejected before loading.
 - The app enables no shell, process, file-system, or custom native command permission.
@@ -49,6 +49,21 @@ Set `JAVA_HOME`, `ANDROID_HOME`, and `NDK_HOME`, accept the Android SDK licenses
 rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 ```
 
+### iPhone and iPad
+
+iOS builds require macOS with the full Xcode application, Xcode command-line tools, CocoaPods, and an Apple Developer signing identity. Linux and Windows can run the shared tests but cannot produce or sign an iOS `.ipa`.
+
+On the Mac that will build the app, install the Apple Rust targets and generate the Xcode project once:
+
+```bash
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+cd apps/pocketmux-native
+npm install
+npm run ios:init
+```
+
+Open the generated Xcode workspace when prompted and select the Pocketmux development team and bundle signing profile. The iOS deployment target is 14.0.
+
 ## Development
 
 Desktop:
@@ -61,6 +76,12 @@ Android, with a device or emulator available:
 
 ```bash
 npm run android:dev
+```
+
+iPhone/iPad simulator or a connected, provisioned device (macOS only):
+
+```bash
+npm run ios:dev
 ```
 
 ### SSH connection mode
@@ -83,7 +104,23 @@ Android:
 npm run android:build
 ```
 
-Android release signing remains an operator-owned release step; private keys and signing properties are intentionally excluded from the repository.
+iOS development archive (macOS only):
+
+```bash
+npm run ios:build
+```
+
+App Store Connect archive (macOS only):
+
+```bash
+npm run ios:build:appstore
+```
+
+The iOS client reuses the same direct HTTPS, SSH, and jump-host connection profiles as Android. Credentials are stored in the iOS Keychain. Received files are saved under `On My iPhone/Pocketmux` or `On My iPad/Pocketmux` and are visible through the Files app; PDFs can also be previewed in the embedded page.
+
+On iOS, the drawer action disconnects the current remote session and returns to the launcher. iOS applications do not terminate themselves; close or background Pocketmux with the system gesture when needed.
+
+Android and iOS release signing remain operator-owned release steps; private keys, certificates, provisioning profiles, and signing properties are intentionally excluded from the repository.
 
 Always use the `npm run android:*` commands instead of invoking `gradlew` directly. The build command regenerates and synchronizes adaptive icon resources before Tauri generates machine-specific Gradle files, native libraries, and properties.
 

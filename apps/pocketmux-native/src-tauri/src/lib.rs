@@ -21,11 +21,13 @@ macro_rules! auth_error {
 
 use reqwest::StatusCode;
 use serde::Deserialize;
-#[cfg(desktop)]
+#[cfg(any(desktop, target_os = "ios"))]
 use tauri::Manager;
 use tauri_plugin_keyring_store::KeyringExt;
 
+mod received_file;
 mod ssh_tunnel;
+use received_file::ReceivedFileResult;
 use ssh_tunnel::SshTunnelManager;
 
 const POCKETMUX_PRODUCT: &str = "pocketmux";
@@ -206,8 +208,50 @@ async fn exit_app(
 ) -> Result<(), String> {
     authorize_shell(&webview, &shell_session, &session_token)?;
     ssh_tunnel::stop(&ssh_tunnels).await?;
+    #[cfg(not(target_os = "ios"))]
     app.exit(0);
+    #[cfg(target_os = "ios")]
+    let _ = app;
     Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn save_received_file(
+    app: tauri::AppHandle,
+    webview: tauri::WebviewWindow,
+    shell_session: tauri::State<'_, ShellSession>,
+    session_token: String,
+    data_base64: String,
+    name: String,
+    content_type: String,
+) -> Result<ReceivedFileResult, String> {
+    authorize_shell(&webview, &shell_session, &session_token)?;
+    received_file::validate_content_type(&content_type)?;
+
+    #[cfg(target_os = "ios")]
+    {
+        let documents_dir = app
+            .path()
+            .document_dir()
+            .map_err(|error| format!("iOS Documents directory is unavailable: {error}"))?;
+        let file_name = received_file::sanitize_file_name(&name);
+        tauri::async_runtime::spawn_blocking(move || {
+            let bytes = received_file::decode_base64_file(&data_base64)?;
+            received_file::write_received_file(&documents_dir, &file_name, &bytes)?;
+            Ok(ReceivedFileResult {
+                ok: true,
+                code: "saved-to-files",
+            })
+        })
+        .await
+        .map_err(|error| format!("received file task failed: {error}"))?
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = (app, data_base64, name);
+        Ok(received_file::unavailable_result())
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -861,6 +905,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             register_shell_session,
             exit_app,
+            save_received_file,
             start_ssh_tunnel,
             stop_ssh_tunnel,
             ssh_tunnel_status,

@@ -50,7 +50,7 @@ function parseServerUrl(input) {
 
 export function buildConnection(serverInput, tokenInput = '', { allowPrivateHttp = true } = {}) {
   const url = parseServerUrl(serverInput);
-  if (url.protocol === 'http:' && !allowPrivateHttp) throw new Error('android-http');
+  if (url.protocol === 'http:' && !allowPrivateHttp) throw new Error('mobile-http');
   const embeddedToken = (url.searchParams.get('token') || '').trim();
   const token = String(tokenInput || '').trim() || embeddedToken;
   if (!url.pathname.endsWith('/')) url.pathname += '/';

@@ -73,7 +73,7 @@ test('rejects the reserved Tauri application host for both schemes', () => {
 test('can enforce an HTTPS-only platform policy after private-host validation', () => {
   assert.throws(
     () => buildConnection('http://192.168.1.5:3789', '', { allowPrivateHttp: false }),
-    /android-http/,
+    /mobile-http/,
   );
   assert.equal(
     buildConnection('https://pocketmux.example.com', '', { allowPrivateHttp: false }).serverUrl,
